@@ -29,6 +29,7 @@ use std::{
 
 use la_arena::{Arena, Idx, RawIdx};
 use rustc_hash::{FxBuildHasher, FxHashMap};
+use smallvec::SmallVec;
 use syntax::{
     AstNode, AstPtr, SyntaxKind, SyntaxNode, SyntaxNodePtr,
     ast::{self, HasName},
@@ -611,7 +612,7 @@ impl AstIdMap {
         // This is true, but it doesn't matter, because such blocks can't exist.
         // After all, the block will then contain the *outer* item, so we allocate
         // an ID for it anyway.
-        let mut blocks = Vec::new();
+        let mut blocks: SmallVec<[(SyntaxNode, ContainsItems); 4]> = SmallVec::new();
         let mut curr_layer = Vec::with_capacity(32);
         curr_layer.push((node.clone(), None));
         let mut next_layer = Vec::with_capacity(32);
