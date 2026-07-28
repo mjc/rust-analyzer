@@ -786,15 +786,20 @@ pub(self) use crate::Trait as IsThisJustATrait;
         let after = profile::memory_usage();
         let after_pss = read_pss_kib();
         let after_peak_rss = read_peak_rss_kib();
-        let module_symbol_bytes: usize = Crate::from(db.test_crate())
-            .modules(&db)
-            .into_iter()
-            .map(|module| SymbolIndex::module_symbols(&db, module).memory_size())
+        let modules = Crate::from(db.test_crate()).modules(&db);
+        let module_symbol_count = modules.len();
+        let module_symbol_bytes: usize = modules
+            .iter()
+            .map(|&module| SymbolIndex::module_symbols(&db, module).memory_size())
             .sum();
         drop(symbols);
+        let after_result_drop = profile::memory_usage();
+        let after_result_drop_pss = read_pss_kib();
 
         use salsa::Database as _;
+        let gc_start = std::time::Instant::now();
         db.trigger_lru_eviction();
+        let gc_elapsed = gc_start.elapsed();
         let after_gc = profile::memory_usage();
         let after_gc_pss = read_pss_kib();
 
@@ -805,16 +810,20 @@ pub(self) use crate::Trait as IsThisJustATrait;
         let warm_elapsed = start.elapsed();
 
         eprintln!(
-            "workspace-symbol profile: results={}, first={:?}, warm={:?}, allocated_delta={}, pss_delta_kib={:?}, peak_rss_delta_kib={:?}, module_symbol_bytes={}, after_gc_delta={}, after_gc_pss_delta_kib={:?}",
+            "workspace-symbol profile: results={}, modules={}, first={:?}, warm={:?}, module_symbol_bytes={}, allocated_delta={} (query), allocated_delta={} (result drop), allocated_delta={} (lru eviction), pss_delta_kib={:?} (query), pss_delta_kib={:?} (result drop), pss_delta_kib={:?} (lru eviction), peak_rss_delta_kib={:?}, lru_eviction={:?}",
             result_count,
+            module_symbol_count,
             first_elapsed,
             warm_elapsed,
-            after.allocated - before.allocated,
-            after_pss.zip(before_pss).map(|(after, before)| after - before),
-            after_peak_rss.zip(before_peak_rss).map(|(after, before)| after - before),
             module_symbol_bytes,
+            after.allocated - before.allocated,
+            after_result_drop.allocated - before.allocated,
             after_gc.allocated - before.allocated,
+            after_pss.zip(before_pss).map(|(after, before)| after - before),
+            after_result_drop_pss.zip(before_pss).map(|(after, before)| after - before),
             after_gc_pss.zip(before_pss).map(|(after, before)| after - before),
+            after_peak_rss.zip(before_peak_rss).map(|(after, before)| after - before),
+            gc_elapsed,
         );
         assert_eq!(warm_symbols.len(), 1);
     }
