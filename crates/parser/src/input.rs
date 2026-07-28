@@ -4,35 +4,28 @@ use edition::Edition;
 
 use crate::SyntaxKind;
 
-#[allow(non_camel_case_types)]
-type bits = u64;
-
 /// Input for the parser -- a sequence of tokens.
 ///
 /// As of now, parser doesn't have access to the *text* of the tokens, and makes
 /// decisions based solely on their classification. Unlike `LexerToken`, the
 /// `Tokens` doesn't include whitespace and comments. Main input to the parser.
 ///
-/// Struct of arrays internally, but this shouldn't really matter.
 pub struct Input {
     token: Vec<InputToken>,
-    joint: Vec<bits>,
 }
 
 struct InputToken {
     kind: SyntaxKind,
     contextual_kind: SyntaxKind,
     edition: Edition,
+    joint: bool,
 }
 
 /// `pub` impl used by callers to create `Tokens`.
 impl Input {
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            token: Vec::with_capacity(capacity),
-            joint: Vec::with_capacity(capacity.div_ceil(bits::BITS as usize)),
-        }
+        Self { token: Vec::with_capacity(capacity) }
     }
     #[inline]
     pub fn push(&mut self, kind: SyntaxKind, edition: Edition) {
@@ -60,17 +53,11 @@ impl Input {
     /// ```
     #[inline]
     pub fn was_joint(&mut self) {
-        let n = self.len() - 1;
-        let (idx, b_idx) = self.bit_index(n);
-        self.joint[idx] |= 1 << b_idx;
+        self.token.last_mut().unwrap().joint = true;
     }
     #[inline]
     fn push_impl(&mut self, kind: SyntaxKind, contextual_kind: SyntaxKind, edition: Edition) {
-        let idx = self.len();
-        if idx.is_multiple_of(bits::BITS as usize) {
-            self.joint.push(0);
-        }
-        self.token.push(InputToken { kind, contextual_kind, edition });
+        self.token.push(InputToken { kind, contextual_kind, edition, joint: false });
     }
 }
 
@@ -86,17 +73,11 @@ impl Input {
         self.token[idx].edition
     }
     pub(crate) fn is_joint(&self, n: usize) -> bool {
-        let (idx, b_idx) = self.bit_index(n);
-        self.joint[idx] & (1 << b_idx) != 0
+        self.token[n].joint
     }
 }
 
 impl Input {
-    fn bit_index(&self, n: usize) -> (usize, usize) {
-        let idx = n / (bits::BITS as usize);
-        let b_idx = n % (bits::BITS as usize);
-        (idx, b_idx)
-    }
     pub fn len(&self) -> usize {
         self.token.len()
     }
