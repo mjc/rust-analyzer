@@ -68,6 +68,7 @@ fn benchmark_parse_macro_rules() {
 }
 
 #[test]
+#[allow(clippy::print_stderr)]
 fn benchmark_expand_macro_rules() {
     if skip_slow_tests() {
         return;
@@ -76,6 +77,8 @@ fn benchmark_expand_macro_rules() {
     let rules = macro_rules_fixtures();
     let invocations = invocation_fixtures(&db, &rules);
 
+    ALLOC_CALLS.store(0, Ordering::Relaxed);
+    REALLOC_CALLS.store(0, Ordering::Relaxed);
     let hash: usize = {
         let _pt = bench("mbe expand macro rules");
         invocations
@@ -87,35 +90,8 @@ fn benchmark_expand_macro_rules() {
             })
             .sum()
     };
-    assert_eq!(hash, 450144);
-}
-
-#[test]
-#[allow(clippy::print_stderr)]
-fn benchmark_expand_macro_rules_allocations() {
-    if skip_slow_tests() {
-        return;
-    }
-    let db = salsa::DatabaseImpl::default();
-    let rules = macro_rules_fixtures();
-    let invocations = invocation_fixtures(&db, &rules);
-
-    ALLOC_CALLS.store(0, Ordering::Relaxed);
-    REALLOC_CALLS.store(0, Ordering::Relaxed);
-    let hash = {
-        let _pt = bench("mbe expand macro rules allocations");
-        invocations
-            .into_iter()
-            .map(|(id, tt)| {
-                let res = rules[&id].expand(&db, &tt, |_| (), MacroCallStyle::FnLike, DUMMY);
-                assert!(res.err.is_none());
-                res.value.0.as_token_trees().len()
-            })
-            .sum::<usize>()
-    };
-
     eprintln!(
-        "mbe expand macro rules allocations: {} alloc calls, {} realloc calls",
+        "mbe expand macro rules: {} alloc calls, {} realloc calls",
         ALLOC_CALLS.load(Ordering::Relaxed),
         REALLOC_CALLS.load(Ordering::Relaxed),
     );
