@@ -59,10 +59,13 @@ mod view_memory_layout;
 mod view_mir;
 mod view_syntax_tree;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{
     panic::{AssertUnwindSafe, UnwindSafe},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc as StdArc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use cfg::CfgOptions;
@@ -174,19 +177,53 @@ impl<T> RangeInfo<T> {
 #[derive(Debug)]
 pub struct AnalysisHost {
     db: RootDatabase,
-    active_snapshots: Arc<AtomicUsize>,
+    snapshot_tracker: StdArc<SnapshotTracker>,
+}
+
+#[derive(Debug, Default)]
+struct SnapshotTracker {
+    active: AtomicUsize,
+    next_id: AtomicU64,
+}
+
+#[derive(Debug)]
+struct ActiveSnapshot {
+    tracker: StdArc<SnapshotTracker>,
+    id: u64,
+    created: Instant,
+}
+
+impl SnapshotTracker {
+    fn acquire(self: &StdArc<Self>) -> ActiveSnapshot {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let active = self.active.fetch_add(1, Ordering::Acquire) + 1;
+        tracing::trace!(snapshot_id = id, active_snapshots = active, "analysis snapshot created");
+        ActiveSnapshot { tracker: StdArc::clone(self), id, created: Instant::now() }
+    }
+}
+
+impl Drop for ActiveSnapshot {
+    fn drop(&mut self) {
+        let active = self.tracker.active.fetch_sub(1, Ordering::Release) - 1;
+        tracing::trace!(
+            snapshot_id = self.id,
+            active_snapshots = active,
+            lifetime = ?self.created.elapsed(),
+            "analysis snapshot dropped"
+        );
+    }
 }
 
 impl AnalysisHost {
     pub fn new(lru_capacity: Option<u16>) -> AnalysisHost {
         AnalysisHost {
             db: RootDatabase::new(lru_capacity),
-            active_snapshots: Arc::new(AtomicUsize::new(0)),
+            snapshot_tracker: StdArc::new(SnapshotTracker::default()),
         }
     }
 
     pub fn with_database(db: RootDatabase) -> AnalysisHost {
-        AnalysisHost { db, active_snapshots: Arc::new(AtomicUsize::new(0)) }
+        AnalysisHost { db, snapshot_tracker: StdArc::new(SnapshotTracker::default()) }
     }
 
     pub fn update_lru_capacity(&mut self, lru_capacity: Option<u16>) {
@@ -200,8 +237,7 @@ impl AnalysisHost {
     /// Returns a snapshot of the current state, which you can query for
     /// semantic information.
     pub fn analysis(&self) -> Analysis {
-        self.active_snapshots.fetch_add(1, Ordering::Relaxed);
-        Analysis { db: self.db.clone(), active_snapshots: Some(Arc::clone(&self.active_snapshots)) }
+        Analysis { db: self.db.clone(), active_snapshot: Some(self.snapshot_tracker.acquire()) }
     }
 
     /// Applies changes to the current state of the world. If there are
@@ -225,10 +261,13 @@ impl AnalysisHost {
     ///
     /// Returns `false` when collection was deferred because a snapshot still exists.
     pub fn trigger_garbage_collection(&mut self) -> bool {
-        if self.active_snapshots.load(Ordering::Acquire) != 0 {
+        let active_snapshots = self.snapshot_tracker.active.load(Ordering::Acquire);
+        if active_snapshots != 0 {
+            tracing::debug!(active_snapshots, "deferring analysis garbage collection");
             return false;
         }
 
+        let before = profile::memory_usage();
         // Evict the tracked query LRUs first. Salsa's LRU eviction cancels outstanding queries,
         // but does not bump the revision; the synthetic write below is still needed to clear
         // fixpoint poisoning after that cancellation.
@@ -237,6 +276,14 @@ impl AnalysisHost {
         // SAFETY: `trigger_lru_eviction` triggers cancellation, so all running queries were canceled.
         unsafe { hir::collect_ty_garbage() };
         profile::trim_memory();
+        let after = profile::memory_usage();
+        tracing::debug!(
+            active_snapshots,
+            allocated_before = %before,
+            allocated_after = %after,
+            reclaimed = %(before - after),
+            "analysis garbage collection completed"
+        );
         true
     }
     pub fn raw_database(&self) -> &RootDatabase {
@@ -260,14 +307,12 @@ impl Default for AnalysisHost {
 #[derive(Debug)]
 pub struct Analysis {
     db: RootDatabase,
-    active_snapshots: Option<Arc<AtomicUsize>>,
+    active_snapshot: Option<ActiveSnapshot>,
 }
 
 impl Drop for Analysis {
     fn drop(&mut self) {
-        if let Some(active_snapshots) = &self.active_snapshots {
-            active_snapshots.fetch_sub(1, Ordering::Release);
-        }
+        drop(self.active_snapshot.take());
     }
 }
 
@@ -340,7 +385,7 @@ impl Analysis {
     ) -> Option<(Analysis, RaFixtureAnalysis)> {
         let analysis =
             RaFixtureAnalysis::analyze_ra_fixture(sema, literal, expanded, config, on_cursor)?;
-        Some((Analysis { db: analysis.db.clone(), active_snapshots: None }, analysis))
+        Some((Analysis { db: analysis.db.clone(), active_snapshot: None }, analysis))
     }
 
     /// Debug info about the current state of the analysis.
