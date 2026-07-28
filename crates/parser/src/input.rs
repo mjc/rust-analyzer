@@ -15,10 +15,14 @@ type bits = u64;
 ///
 /// Struct of arrays internally, but this shouldn't really matter.
 pub struct Input {
-    kind: Vec<SyntaxKind>,
+    token: Vec<InputToken>,
     joint: Vec<bits>,
-    contextual_kind: Vec<SyntaxKind>,
-    edition: Vec<Edition>,
+}
+
+struct InputToken {
+    kind: SyntaxKind,
+    contextual_kind: SyntaxKind,
+    edition: Edition,
 }
 
 /// `pub` impl used by callers to create `Tokens`.
@@ -26,10 +30,8 @@ impl Input {
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            kind: Vec::with_capacity(capacity),
+            token: Vec::with_capacity(capacity),
             joint: Vec::with_capacity(capacity.div_ceil(bits::BITS as usize)),
-            contextual_kind: Vec::with_capacity(capacity),
-            edition: Vec::with_capacity(capacity),
         }
     }
     #[inline]
@@ -68,22 +70,20 @@ impl Input {
         if idx.is_multiple_of(bits::BITS as usize) {
             self.joint.push(0);
         }
-        self.kind.push(kind);
-        self.contextual_kind.push(contextual_kind);
-        self.edition.push(edition);
+        self.token.push(InputToken { kind, contextual_kind, edition });
     }
 }
 
 /// pub(crate) impl used by the parser to consume `Tokens`.
 impl Input {
     pub(crate) fn kind(&self, idx: usize) -> SyntaxKind {
-        self.kind.get(idx).copied().unwrap_or(SyntaxKind::EOF)
+        self.token.get(idx).map_or(SyntaxKind::EOF, |token| token.kind)
     }
     pub(crate) fn contextual_kind(&self, idx: usize) -> SyntaxKind {
-        self.contextual_kind.get(idx).copied().unwrap_or(SyntaxKind::EOF)
+        self.token.get(idx).map_or(SyntaxKind::EOF, |token| token.contextual_kind)
     }
     pub(crate) fn edition(&self, idx: usize) -> Edition {
-        self.edition[idx]
+        self.token[idx].edition
     }
     pub(crate) fn is_joint(&self, n: usize) -> bool {
         let (idx, b_idx) = self.bit_index(n);
@@ -98,6 +98,6 @@ impl Input {
         (idx, b_idx)
     }
     pub fn len(&self) -> usize {
-        self.kind.len()
+        self.token.len()
     }
 }
