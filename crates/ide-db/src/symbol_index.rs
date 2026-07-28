@@ -418,7 +418,7 @@ impl<'db> SymbolIndex<'db> {
     /// The symbol index for a given module. These modules should only be in source roots that
     /// are inside local_roots.
     pub fn module_symbols(db: &dyn HirDatabase, module: Module) -> &SymbolIndex<'_> {
-        #[salsa::tracked(returns(ref))]
+        #[salsa::tracked(lru = 128, returns(ref))]
         fn module_symbols<'db>(
             db: &'db dyn HirDatabase,
             module: hir::ModuleId,
@@ -655,6 +655,7 @@ impl Query {
 #[cfg(test)]
 mod tests {
 
+    use base_db::SourceDatabase;
     use expect_test::expect_file;
     use rustc_hash::FxHashSet;
     use salsa::Setter;
@@ -751,6 +752,205 @@ pub(self) use crate::Trait as IsThisJustATrait;
             .collect();
 
         expect_file!["./test_data/test_symbol_index_collection.txt"].assert_debug_eq(&symbols);
+    }
+
+    #[test]
+    #[ignore = "run explicitly when profiling workspace-symbol memory"]
+    #[allow(clippy::print_stderr)]
+    fn profile_world_symbols_retained_memory() {
+        let mut fixture = String::from("//- /lib.rs crate:main\n");
+        for module in 0..200 {
+            fixture.push_str(&format!("pub mod m{module};\n"));
+        }
+        for module in 0..200 {
+            fixture.push_str(&format!("//- /m{module}.rs\n"));
+            for symbol in 0..500 {
+                fixture.push_str(&format!("pub fn function_{module}_{symbol}() {{}}\n"));
+            }
+        }
+
+        let (mut db, _) = RootDatabase::with_many_files(&fixture);
+        let mut local_roots = FxHashSet::default();
+        local_roots.insert(WORKSPACE);
+        LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+
+        let before = profile::memory_usage();
+        let before_pss = read_pss_kib();
+        let before_peak_rss = read_peak_rss_kib();
+        let start = std::time::Instant::now();
+        let mut query = Query::new("function_0_0".to_owned());
+        query.exact();
+        let symbols = world_symbols(&db, query);
+        let result_count = symbols.len();
+        let first_elapsed = start.elapsed();
+        let after = profile::memory_usage();
+        let after_pss = read_pss_kib();
+        let after_peak_rss = read_peak_rss_kib();
+        let module_symbol_bytes: usize = Crate::from(db.test_crate())
+            .modules(&db)
+            .into_iter()
+            .map(|module| SymbolIndex::module_symbols(&db, module).memory_size())
+            .sum();
+        drop(symbols);
+
+        use salsa::Database as _;
+        db.trigger_lru_eviction();
+        let after_gc = profile::memory_usage();
+        let after_gc_pss = read_pss_kib();
+
+        let start = std::time::Instant::now();
+        let mut query = Query::new("function_0_0".to_owned());
+        query.exact();
+        let warm_symbols = world_symbols(&db, query);
+        let warm_elapsed = start.elapsed();
+
+        eprintln!(
+            "workspace-symbol profile: results={}, first={:?}, warm={:?}, allocated_delta={}, pss_delta_kib={:?}, peak_rss_delta_kib={:?}, module_symbol_bytes={}, after_gc_delta={}, after_gc_pss_delta_kib={:?}",
+            result_count,
+            first_elapsed,
+            warm_elapsed,
+            after.allocated - before.allocated,
+            after_pss.zip(before_pss).map(|(after, before)| after - before),
+            after_peak_rss.zip(before_peak_rss).map(|(after, before)| after - before),
+            module_symbol_bytes,
+            after_gc.allocated - before.allocated,
+            after_gc_pss.zip(before_pss).map(|(after, before)| after - before),
+        );
+        assert_eq!(warm_symbols.len(), 1);
+    }
+
+    #[test]
+    fn test_world_symbols_after_lru_eviction() {
+        let mut fixture = String::from("//- /lib.rs crate:main\n");
+        for module in 0..129 {
+            fixture.push_str(&format!("pub mod m{module};\n"));
+        }
+        for module in 0..129 {
+            fixture.push_str(&format!("//- /m{module}.rs\npub fn function_{module}() {{}}\n"));
+        }
+
+        let (mut db, _) = RootDatabase::with_many_files(&fixture);
+        let mut local_roots = FxHashSet::default();
+        local_roots.insert(WORKSPACE);
+        LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+
+        let mut query = Query::new("function_0".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+
+        use salsa::Database as _;
+        db.trigger_lru_eviction();
+
+        let mut query = Query::new("function_128".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+    }
+
+    #[test]
+    fn test_world_symbols_after_edit() {
+        let (mut db, files) = RootDatabase::with_many_files(
+            r#"
+//- /lib.rs crate:main
+mod module;
+//- /module.rs
+pub fn old_symbol() {}
+"#,
+        );
+        let mut local_roots = FxHashSet::default();
+        local_roots.insert(WORKSPACE);
+        LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+
+        let module_file = files[1].file_id(&db);
+        let mut query = Query::new("old_symbol".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+
+        db.set_file_text(module_file, "pub fn new_symbol() {}\n");
+
+        let mut query = Query::new("old_symbol".to_owned());
+        query.exact();
+        assert!(world_symbols(&db, query).is_empty());
+        let mut query = Query::new("new_symbol".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+    }
+
+    #[test]
+    fn test_world_symbols_across_linked_roots_concurrently() {
+        let mut fixture = String::new();
+        for root in 0..5 {
+            let deps = (0..root).map(|dependency| format!("root{dependency}")).collect::<Vec<_>>();
+            let deps =
+                if deps.is_empty() { String::new() } else { format!(" deps:{}", deps.join(",")) };
+            let new_source_root = if root == 0 { "" } else { " new_source_root:local" };
+            fixture.push_str(&format!(
+                "//- /root{root}/lib.rs crate:root{root}{deps}{new_source_root}\n"
+            ));
+            for module in 0..26 {
+                fixture.push_str(&format!("pub mod m{root}_{module};\n"));
+            }
+            for module in 0..26 {
+                fixture.push_str(&format!(
+                    "//- /root{root}/m{root}_{module}.rs\npub fn function_{root}_{module}() {{}}\n"
+                ));
+            }
+        }
+
+        let (mut db, _) = RootDatabase::with_many_files(&fixture);
+        let local_roots = (0..5).map(SourceRootId).collect();
+        LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+
+        let first = db.clone();
+        let second = db.clone();
+        let (first_result, second_result) = std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                let mut query = Query::new("function_0_0".to_owned());
+                query.exact();
+                world_symbols(&first, query).len()
+            });
+            let second = scope.spawn(move || {
+                let mut query = Query::new("function_4_25".to_owned());
+                query.exact();
+                world_symbols(&second, query).len()
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(first_result, 1);
+        assert_eq!(second_result, 1);
+
+        use salsa::Database as _;
+        db.trigger_lru_eviction();
+        let mut query = Query::new("function_2_13".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_pss_kib() -> Option<u64> {
+        let smaps_rollup = std::fs::read_to_string("/proc/self/smaps_rollup").ok()?;
+        smaps_rollup.lines().find_map(|line| {
+            let mut fields = line.split_whitespace();
+            (fields.next() == Some("Pss:")).then(|| fields.next()?.parse().ok())?
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn read_pss_kib() -> Option<u64> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_peak_rss_kib() -> Option<u64> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        status.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name == "VmHWM").then(|| value.split_whitespace().next()?.parse().ok())?
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn read_peak_rss_kib() -> Option<u64> {
+        None
     }
 
     #[test]
