@@ -18,7 +18,7 @@ pub struct EditionedFileId {
 
 #[salsa::tracked]
 impl EditionedFileId {
-    #[salsa::tracked(lru = 128)]
+    #[salsa::tracked(lru = 64)]
     pub fn parse(self, db: &dyn SourceDatabase) -> syntax::Parse<ast::SourceFile> {
         let _p = tracing::info_span!("parse", ?self).entered();
         let (file_id, edition) = self.unpack(db);
