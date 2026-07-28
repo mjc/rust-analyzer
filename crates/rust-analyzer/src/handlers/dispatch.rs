@@ -9,6 +9,7 @@ use ide_db::base_db::{
     salsa::{self, Cancelled},
 };
 use lsp_server::{ExtractError, Response, ResponseError};
+use lsp_types::Request as _;
 use serde::{Serialize, de::DeserializeOwned};
 use stdx::thread::ThreadIntent;
 
@@ -264,11 +265,19 @@ impl RequestDispatcher<'_> {
                 f(world, params)
             });
             match thread_result_to_response::<R>(req.id.clone(), result) {
-                Ok(response) => Task::Response(response),
+                Ok(response) => Task::Response {
+                    response,
+                    evict_lru: R::METHOD.as_str()
+                        == crate::lsp::ext::WorkspaceSymbolRequest::METHOD.as_str(),
+                },
                 Err(_cancelled) if ALLOW_RETRYING => Task::Retry(req),
                 Err(_cancelled) => {
                     let error = on_cancelled();
-                    Task::Response(Response { id: req.id, result: None, error: Some(error) })
+                    Task::Response {
+                        response: Response { id: req.id, result: None, error: Some(error) },
+                        evict_lru: R::METHOD.as_str()
+                            == crate::lsp::ext::WorkspaceSymbolRequest::METHOD.as_str(),
+                    }
                 }
             }
         });

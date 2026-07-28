@@ -197,6 +197,7 @@ pub(crate) struct GlobalState {
 
     pub(crate) minicore: MiniCoreRustAnalyzerInternalOnly,
     pub(crate) last_gc_revision: Revision,
+    pub(crate) workspace_symbol_gc_requested: bool,
 }
 
 // FIXME: This should move to the VFS once the rewrite is done.
@@ -326,6 +327,7 @@ impl GlobalState {
 
             minicore: MiniCoreRustAnalyzerInternalOnly::default(),
             last_gc_revision,
+            workspace_symbol_gc_requested: false,
         };
         // Apply any required database inputs from the config.
         this.update_configuration(config);
