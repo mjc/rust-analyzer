@@ -8,7 +8,7 @@ mod stop_watch;
 use std::cell::RefCell;
 
 pub use crate::{
-    memory_usage::{Bytes, MemoryUsage},
+    memory_usage::{Bytes, MemoryUsage, trim_memory},
     stop_watch::{StopWatch, StopWatchSpan},
 };
 
