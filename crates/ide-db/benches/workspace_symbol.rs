@@ -73,8 +73,19 @@ fn setup_tiny_sources() -> Vec<String> {
     (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
 }
 
+fn setup_indented_sources() -> Vec<String> {
+    (0..1024)
+        .map(|index| {
+            format!(
+                "fn f{index}() {{\n    if true {{\n        let value = ();\n    }}\n\n    let other = ();\n}}\n"
+            )
+        })
+        .collect()
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::tiny_files(setup_tiny_sources())]
+#[bench::indented_files(setup_indented_sources())]
 fn parse_source_files(sources: Vec<String>) -> usize {
     sources
         .iter()
