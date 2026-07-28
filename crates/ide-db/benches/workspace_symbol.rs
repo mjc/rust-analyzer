@@ -51,8 +51,25 @@ fn ast_id_map(source: SyntaxNode) -> usize {
     black_box(span::AstIdMap::from_source(&source).len())
 }
 
+fn setup_tiny_sources() -> Vec<String> {
+    (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::tiny_files(setup_tiny_sources())]
+fn parse_source_files(sources: Vec<String>) -> usize {
+    sources
+        .iter()
+        .map(|source| {
+            u32::from(
+                SourceFile::parse(black_box(source), Edition::CURRENT).syntax_node().text().len(),
+            ) as usize
+        })
+        .sum()
+}
+
 library_benchmark_group!(
     name = workspace_symbol_group,
-    benchmarks = [workspace_symbol, ast_id_map]
+    benchmarks = [workspace_symbol, ast_id_map, parse_source_files]
 );
 main!(library_benchmark_groups = workspace_symbol_group);
