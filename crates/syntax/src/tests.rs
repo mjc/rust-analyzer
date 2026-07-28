@@ -46,6 +46,18 @@ fn static_tokens_are_shared_between_trees() {
         .find(|token| token.kind() == SyntaxKind::IDENT)
         .unwrap();
     assert!(!std::ptr::eq(first_name.green(), second_name.green()));
+
+    let first_space = first
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == SyntaxKind::WHITESPACE)
+        .unwrap();
+    let second_space = second
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == SyntaxKind::WHITESPACE)
+        .unwrap();
+    assert!(std::ptr::eq(first_space.green(), second_space.green()));
 }
 
 #[test]

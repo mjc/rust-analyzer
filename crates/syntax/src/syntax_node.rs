@@ -37,6 +37,8 @@ pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
 static STATIC_TOKENS: [OnceLock<GreenToken>; SyntaxKind::__LAST as usize] =
     [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
+static SPACE_TOKEN: OnceLock<GreenToken> = OnceLock::new();
+static NEWLINE_TOKEN: OnceLock<GreenToken> = OnceLock::new();
 
 #[derive(Default)]
 pub struct SyntaxTreeBuilder {
@@ -63,9 +65,18 @@ impl SyntaxTreeBuilder {
 
     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
         let rowan_kind = RustLanguage::kind_to_raw(kind);
-        if (kind.is_punct() || kind.is_keyword(Edition::LATEST)) && kind.text() == text {
-            let token =
-                STATIC_TOKENS[kind as usize].get_or_init(|| GreenToken::new(rowan_kind, text));
+        let shared = if (kind.is_punct() || kind.is_keyword(Edition::LATEST)) && kind.text() == text
+        {
+            Some(&STATIC_TOKENS[kind as usize])
+        } else {
+            match (kind, text) {
+                (SyntaxKind::WHITESPACE, " ") => Some(&SPACE_TOKEN),
+                (SyntaxKind::WHITESPACE, "\n") => Some(&NEWLINE_TOKEN),
+                _ => None,
+            }
+        };
+        if let Some(shared) = shared {
+            let token = shared.get_or_init(|| GreenToken::new(rowan_kind, text));
             self.inner.token_from_green(token.clone());
         } else {
             self.inner.token(rowan_kind, text);
