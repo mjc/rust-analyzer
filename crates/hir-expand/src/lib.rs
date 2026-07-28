@@ -1728,6 +1728,8 @@ impl HirFileId {
 impl HirFileId {
     #[salsa::tracked(lru = 128, returns(ref))]
     pub fn ast_id_map(self, db: &dyn SourceDatabase) -> AstIdMap {
-        AstIdMap::from_source(&self.parse_or_expand(db))
+        let ast_id_map = AstIdMap::from_source(&self.parse_or_expand(db));
+        tracing::trace!(entries = ast_id_map.len(), "ast id map computed");
+        ast_id_map
     }
 }

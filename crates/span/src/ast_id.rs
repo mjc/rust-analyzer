@@ -582,6 +582,10 @@ enum ContainsItems {
 }
 
 impl AstIdMap {
+    pub fn len(&self) -> usize {
+        self.arena.len()
+    }
+
     pub fn from_source(node: &SyntaxNode) -> AstIdMap {
         assert!(node.parent().is_none());
         let mut res = AstIdMap::default();

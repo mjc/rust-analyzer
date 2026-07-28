@@ -39,6 +39,7 @@ mod tests;
 use std::{
     fmt::{self, Debug},
     hash::Hash,
+    mem::size_of,
     ops::Index,
     sync::OnceLock,
 };
@@ -183,6 +184,21 @@ fn file_item_tree_query(
         }
     };
     let ItemTree { top_level, top_attrs, attrs, vis, big_data, small_data } = &item_tree;
+    let estimated_inline_bytes = top_level.len() * size_of::<ModItemId>()
+        + size_of::<AttrsOrCfg>()
+        + attrs.capacity() * size_of::<(FileAstId<ast::Item>, AttrsOrCfg)>()
+        + vis.arena.capacity() * size_of::<RawVisibility>()
+        + big_data.capacity() * size_of::<(FileAstId<ast::Item>, BigModItem)>()
+        + small_data.capacity() * size_of::<(FileAstId<ast::Item>, SmallModItem)>();
+    tracing::trace!(
+        top_level_items = top_level.len(),
+        attrs = attrs.len(),
+        visibilities = vis.arena.len(),
+        big_items = big_data.len(),
+        small_items = small_data.len(),
+        estimated_inline_bytes,
+        "item tree computed",
+    );
     if small_data.is_empty()
         && big_data.is_empty()
         && top_level.is_empty()
