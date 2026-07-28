@@ -152,8 +152,8 @@ impl<'a> Converter<'a> {
         Self {
             res: LexedStr {
                 text,
-                kind: Vec::with_capacity(text.len() / 3),
-                start: Vec::with_capacity(text.len() / 3),
+                kind: Vec::with_capacity(text.len() / 2 + 1),
+                start: Vec::with_capacity(text.len() / 2 + 1),
                 error: Vec::new(),
             },
             offset: 0,
