@@ -1,5 +1,10 @@
 //! This module add real world mbe example for benchmark tests
 
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 use intern::Symbol;
 use rustc_hash::FxHashMap;
 use stdx::itertools::Itertools;
@@ -18,6 +23,30 @@ use crate::{
     DeclarativeMacro, MacroCallStyle,
     parser::{MetaVarKind, Op, RepeatKind, Separator},
 };
+
+struct CountingAllocator;
+
+static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+static REALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        REALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAllocator = CountingAllocator;
 
 #[test]
 fn benchmark_parse_macro_rules() {
@@ -58,6 +87,38 @@ fn benchmark_expand_macro_rules() {
             })
             .sum()
     };
+    assert_eq!(hash, 450144);
+}
+
+#[test]
+#[allow(clippy::print_stderr)]
+fn benchmark_expand_macro_rules_allocations() {
+    if skip_slow_tests() {
+        return;
+    }
+    let db = salsa::DatabaseImpl::default();
+    let rules = macro_rules_fixtures();
+    let invocations = invocation_fixtures(&db, &rules);
+
+    ALLOC_CALLS.store(0, Ordering::Relaxed);
+    REALLOC_CALLS.store(0, Ordering::Relaxed);
+    let hash = {
+        let _pt = bench("mbe expand macro rules allocations");
+        invocations
+            .into_iter()
+            .map(|(id, tt)| {
+                let res = rules[&id].expand(&db, &tt, |_| (), MacroCallStyle::FnLike, DUMMY);
+                assert!(res.err.is_none());
+                res.value.0.as_token_trees().len()
+            })
+            .sum::<usize>()
+    };
+
+    eprintln!(
+        "mbe expand macro rules allocations: {} alloc calls, {} realloc calls",
+        ALLOC_CALLS.load(Ordering::Relaxed),
+        REALLOC_CALLS.load(Ordering::Relaxed),
+    );
     assert_eq!(hash, 450144);
 }
 
