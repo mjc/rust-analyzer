@@ -6,7 +6,7 @@ use ide_db::{
     symbol_index::{Query, world_symbols},
 };
 use salsa::Setter;
-use syntax::{Edition, SourceFile, SyntaxNode};
+use syntax::{Edition, SourceFile, SyntaxNode, TextSize};
 use test_fixture::{WORKSPACE, WithFixture};
 
 fn setup_workspace() -> (RootDatabase, Query) {
@@ -69,6 +69,33 @@ fn nested_ast_id_map(source: SyntaxNode) -> usize {
     black_box(span::AstIdMap::from_source(&source).len())
 }
 
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::nested_tree(setup_nested_ast_id_map())]
+fn syntax_cursor_traversal(source: SyntaxNode) -> usize {
+    black_box(
+        source
+            .descendants_with_tokens()
+            .map(|element| {
+                let range = element.text_range();
+                u32::from(range.start()) as usize + u32::from(range.end()) as usize
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::nested_tree(setup_nested_ast_id_map())]
+fn syntax_token_at_offset(source: SyntaxNode) -> usize {
+    let len = u32::from(source.text_range().len());
+    black_box(
+        (0..len)
+            .step_by(16)
+            .filter_map(|offset| source.token_at_offset(TextSize::from(offset)).left_biased())
+            .map(|token| u32::from(token.text_range().start()) as usize)
+            .sum(),
+    )
+}
+
 fn setup_tiny_sources() -> Vec<String> {
     (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
 }
@@ -99,6 +126,13 @@ fn parse_source_files(sources: Vec<String>) -> usize {
 
 library_benchmark_group!(
     name = workspace_symbol_group,
-    benchmarks = [workspace_symbol, ast_id_map, nested_ast_id_map, parse_source_files]
+    benchmarks = [
+        workspace_symbol,
+        ast_id_map,
+        nested_ast_id_map,
+        syntax_cursor_traversal,
+        syntax_token_at_offset,
+        parse_source_files
+    ]
 );
 main!(library_benchmark_groups = workspace_symbol_group);
