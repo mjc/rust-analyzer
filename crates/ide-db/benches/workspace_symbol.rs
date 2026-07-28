@@ -1,6 +1,6 @@
 use std::hint::black_box;
 
-use gungraun::prelude::*;
+use gungraun::{Dhat, prelude::*};
 use ide_db::{
     LocalRoots, RootDatabase,
     symbol_index::{Query, world_symbols},
@@ -45,7 +45,7 @@ fn setup_ast_id_map() -> SyntaxNode {
     SourceFile::parse(&source, Edition::CURRENT).syntax_node().clone()
 }
 
-#[library_benchmark]
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::large_file(setup_ast_id_map())]
 fn ast_id_map(source: SyntaxNode) -> usize {
     black_box(span::AstIdMap::from_source(&source).len())
