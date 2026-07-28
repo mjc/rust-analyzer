@@ -617,84 +617,85 @@ impl AstIdMap {
         curr_layer.push((node.clone(), None));
         let mut next_layer = Vec::with_capacity(32);
         while !curr_layer.is_empty() {
-            curr_layer.drain(..).for_each(|(node, parent_idx)| {
-                let mut preorder = node.preorder();
-                while let Some(event) = preorder.next() {
-                    match event {
-                        syntax::WalkEvent::Enter(node) => {
-                            if ast::BlockExpr::can_cast(node.kind()) {
-                                blocks.push((node, ContainsItems::No));
-                            } else if let Some(kind) = ErasedFileAstId::should_alloc(&node) {
-                                // Allocate blocks on-demand, only if they have items.
-                                // We don't associate items with blocks, only with items, since block IDs can be quite unstable.
-                                // FIXME: Is this the correct thing to do? Macro calls might actually be more incremental if
-                                // associated with blocks (not sure). Either way it's not a big deal.
-                                let is_item = matches!(
-                                    kind,
-                                    ErasedFileAstIdKind::Enum
-                                        | ErasedFileAstIdKind::Struct
-                                        | ErasedFileAstIdKind::Union
-                                        | ErasedFileAstIdKind::ExternCrate
-                                        | ErasedFileAstIdKind::MacroDef
-                                        | ErasedFileAstIdKind::MacroRules
-                                        | ErasedFileAstIdKind::Module
-                                        | ErasedFileAstIdKind::Static
-                                        | ErasedFileAstIdKind::Trait
-                                        | ErasedFileAstIdKind::Const
-                                        | ErasedFileAstIdKind::Fn
-                                        | ErasedFileAstIdKind::TypeAlias
-                                        | ErasedFileAstIdKind::ExternBlock
-                                        | ErasedFileAstIdKind::Use
-                                        | ErasedFileAstIdKind::Impl
-                                );
-                                if let Some((
-                                    last_block_node,
-                                    already_allocated @ ContainsItems::No,
-                                )) = blocks.last_mut()
-                                    && (is_item
-                                        || (kind == ErasedFileAstIdKind::MacroCall && {
-                                            let mut anc = node.ancestors();
-                                            _ = anc.next();
-                                            anc.next().is_some_and(|it| {
-                                                it.kind() == SyntaxKind::MACRO_EXPR
-                                            }) && anc.next().is_some_and(|it| {
-                                                it.kind() == SyntaxKind::EXPR_STMT
-                                                    || it.kind() == SyntaxKind::STMT_LIST
-                                            })
-                                        }))
-                                {
-                                    let parent = parent_of(parent_idx, &res);
-                                    let block_ast_id =
-                                        block_expr_ast_id(last_block_node, &mut index_map, parent)
-                                            .expect("not a BlockExpr");
-                                    res.arena
-                                        .alloc((SyntaxNodePtr::new(last_block_node), block_ast_id));
-                                    *already_allocated = ContainsItems::Yes;
-                                }
-
-                                let parent = parent_of(parent_idx, &res);
-                                let ast_id =
-                                    ErasedFileAstId::ast_id_for(&node, &mut index_map, parent)
-                                        .expect("this node should have an ast id");
-                                let idx = res.arena.alloc((SyntaxNodePtr::new(&node), ast_id));
-
-                                next_layer.extend(node.children().map(|child| (child, Some(idx))));
-                                preorder.skip_subtree();
-                            }
+            for (mut node, parent_idx) in curr_layer.drain(..) {
+                let mut walk_stack: SmallVec<[(syntax::SyntaxNodeChildren, bool); 32]> =
+                    SmallVec::new();
+                'walk: loop {
+                    let is_block = ast::BlockExpr::can_cast(node.kind());
+                    if is_block {
+                        blocks.push((node.clone(), ContainsItems::No));
+                    } else if let Some(kind) = ErasedFileAstId::should_alloc(&node) {
+                        // Allocate blocks on-demand, only if they have items.
+                        // We don't associate items with blocks, only with items, since block IDs can be quite unstable.
+                        // FIXME: Is this the correct thing to do? Macro calls might actually be more incremental if
+                        // associated with blocks (not sure). Either way it's not a big deal.
+                        let is_item = matches!(
+                            kind,
+                            ErasedFileAstIdKind::Enum
+                                | ErasedFileAstIdKind::Struct
+                                | ErasedFileAstIdKind::Union
+                                | ErasedFileAstIdKind::ExternCrate
+                                | ErasedFileAstIdKind::MacroDef
+                                | ErasedFileAstIdKind::MacroRules
+                                | ErasedFileAstIdKind::Module
+                                | ErasedFileAstIdKind::Static
+                                | ErasedFileAstIdKind::Trait
+                                | ErasedFileAstIdKind::Const
+                                | ErasedFileAstIdKind::Fn
+                                | ErasedFileAstIdKind::TypeAlias
+                                | ErasedFileAstIdKind::ExternBlock
+                                | ErasedFileAstIdKind::Use
+                                | ErasedFileAstIdKind::Impl
+                        );
+                        if let Some((last_block_node, already_allocated @ ContainsItems::No)) =
+                            blocks.last_mut()
+                            && (is_item
+                                || (kind == ErasedFileAstIdKind::MacroCall && {
+                                    let mut anc = node.ancestors();
+                                    _ = anc.next();
+                                    anc.next().is_some_and(|it| it.kind() == SyntaxKind::MACRO_EXPR)
+                                        && anc.next().is_some_and(|it| {
+                                            it.kind() == SyntaxKind::EXPR_STMT
+                                                || it.kind() == SyntaxKind::STMT_LIST
+                                        })
+                                }))
+                        {
+                            let parent = parent_of(parent_idx, &res);
+                            let block_ast_id =
+                                block_expr_ast_id(last_block_node, &mut index_map, parent)
+                                    .expect("not a BlockExpr");
+                            res.arena.alloc((SyntaxNodePtr::new(last_block_node), block_ast_id));
+                            *already_allocated = ContainsItems::Yes;
                         }
-                        syntax::WalkEvent::Leave(node) => {
-                            if ast::BlockExpr::can_cast(node.kind()) {
-                                let block = blocks.pop();
-                                debug_assert_eq!(
-                                    block.map(|it| it.0),
-                                    Some(node),
-                                    "left a BlockExpr we never entered"
-                                );
-                            }
+
+                        let parent = parent_of(parent_idx, &res);
+                        let ast_id = ErasedFileAstId::ast_id_for(&node, &mut index_map, parent)
+                            .expect("this node should have an ast id");
+                        let idx = res.arena.alloc((SyntaxNodePtr::new(&node), ast_id));
+
+                        next_layer.extend(node.children().map(|child| (child, Some(idx))));
+                    } else {
+                        walk_stack.push((node.children(), false));
+                    }
+
+                    if is_block {
+                        walk_stack.push((node.children(), true));
+                    }
+
+                    while let Some((children, is_block)) = walk_stack.last_mut() {
+                        if let Some(child) = children.next() {
+                            node = child;
+                            continue 'walk;
+                        }
+                        let is_block = *is_block;
+                        walk_stack.pop();
+                        if is_block {
+                            blocks.pop();
                         }
                     }
+                    break 'walk;
                 }
-            });
+            }
             std::mem::swap(&mut curr_layer, &mut next_layer);
             assert!(blocks.is_empty(), "didn't leave all BlockExprs");
         }
