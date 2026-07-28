@@ -37,8 +37,24 @@ pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
 static STATIC_TOKENS: [OnceLock<GreenToken>; SyntaxKind::__LAST as usize] =
     [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
-static SPACE_TOKEN: OnceLock<GreenToken> = OnceLock::new();
-static NEWLINE_TOKEN: OnceLock<GreenToken> = OnceLock::new();
+const MAX_SHARED_NEWLINES: usize = 2;
+const MAX_SHARED_SPACES: usize = 32;
+static WHITESPACE_TOKENS: [[OnceLock<GreenToken>; MAX_SHARED_SPACES + 1]; MAX_SHARED_NEWLINES + 1] =
+    [const { [const { OnceLock::new() }; MAX_SHARED_SPACES + 1] }; MAX_SHARED_NEWLINES + 1];
+
+fn shared_whitespace(text: &str) -> Option<&'static OnceLock<GreenToken>> {
+    let bytes = text.as_bytes();
+    let newlines = bytes.iter().take_while(|&&byte| byte == b'\n').count();
+    let spaces = bytes.len() - newlines;
+    if newlines > MAX_SHARED_NEWLINES
+        || spaces > MAX_SHARED_SPACES
+        || bytes[newlines..].iter().any(|&byte| byte != b' ')
+        || bytes.is_empty()
+    {
+        return None;
+    }
+    Some(&WHITESPACE_TOKENS[newlines][spaces])
+}
 
 #[derive(Default)]
 pub struct SyntaxTreeBuilder {
@@ -68,12 +84,10 @@ impl SyntaxTreeBuilder {
         let shared = if (kind.is_punct() || kind.is_keyword(Edition::LATEST)) && kind.text() == text
         {
             Some(&STATIC_TOKENS[kind as usize])
+        } else if kind == SyntaxKind::WHITESPACE {
+            shared_whitespace(text)
         } else {
-            match (kind, text) {
-                (SyntaxKind::WHITESPACE, " ") => Some(&SPACE_TOKEN),
-                (SyntaxKind::WHITESPACE, "\n") => Some(&NEWLINE_TOKEN),
-                _ => None,
-            }
+            None
         };
         if let Some(shared) = shared {
             let token = shared.get_or_init(|| GreenToken::new(rowan_kind, text));

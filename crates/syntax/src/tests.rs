@@ -27,8 +27,8 @@ fn main() {
 
 #[test]
 fn static_tokens_are_shared_between_trees() {
-    let first = SourceFile::parse("fn same() {}", Edition::CURRENT).syntax_node();
-    let second = SourceFile::parse("fn same() {}", Edition::CURRENT).syntax_node();
+    let first = SourceFile::parse("fn same() {\n    ()\n}", Edition::CURRENT).syntax_node();
+    let second = SourceFile::parse("fn same() {\n    ()\n}", Edition::CURRENT).syntax_node();
 
     let first_fn = first.first_token().unwrap();
     let second_fn = second.first_token().unwrap();
@@ -50,12 +50,12 @@ fn static_tokens_are_shared_between_trees() {
     let first_space = first
         .descendants_with_tokens()
         .filter_map(|element| element.into_token())
-        .find(|token| token.kind() == SyntaxKind::WHITESPACE)
+        .find(|token| token.text() == "\n    ")
         .unwrap();
     let second_space = second
         .descendants_with_tokens()
         .filter_map(|element| element.into_token())
-        .find(|token| token.kind() == SyntaxKind::WHITESPACE)
+        .find(|token| token.text() == "\n    ")
         .unwrap();
     assert!(std::ptr::eq(first_space.green(), second_space.green()));
 }
