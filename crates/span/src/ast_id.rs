@@ -31,7 +31,7 @@ use la_arena::{Arena, Idx, RawIdx};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use smallvec::SmallVec;
 use syntax::{
-    AstNode, AstPtr, SyntaxKind, SyntaxNode, SyntaxNodePtr,
+    AstNode, AstPtr, GreenNode, SyntaxKind, SyntaxNode, SyntaxNodePtr, TextRange,
     ast::{self, HasName},
     match_ast,
 };
@@ -226,8 +226,7 @@ impl ErasedFileAstId {
             .or_else(|| asm_expr_ast_id(node, index_map))
     }
 
-    fn should_alloc(node: &SyntaxNode) -> Option<ErasedFileAstIdKind> {
-        let kind = node.kind();
+    fn should_alloc(kind: SyntaxKind) -> Option<ErasedFileAstIdKind> {
         should_alloc_has_name(kind)
             .or_else(|| should_alloc_assoc_item(kind))
             .or_else(|| {
@@ -582,6 +581,11 @@ enum ContainsItems {
     No,
 }
 
+enum GreenWalkEvent {
+    Enter(GreenNode, TextRange),
+    LeaveBlock,
+}
+
 impl AstIdMap {
     pub fn len(&self) -> usize {
         self.arena.len()
@@ -612,19 +616,29 @@ impl AstIdMap {
         // This is true, but it doesn't matter, because such blocks can't exist.
         // After all, the block will then contain the *outer* item, so we allocate
         // an ID for it anyway.
-        let mut blocks: SmallVec<[(SyntaxNode, ContainsItems); 4]> = SmallVec::new();
+        let mut blocks: SmallVec<[(TextRange, ContainsItems); 4]> = SmallVec::new();
         let mut curr_layer = Vec::with_capacity(32);
         curr_layer.push((node.clone(), None));
         let mut next_layer = Vec::with_capacity(32);
         while !curr_layer.is_empty() {
-            for (mut node, parent_idx) in curr_layer.drain(..) {
-                let mut walk_stack: SmallVec<[(syntax::SyntaxNodeChildren, bool); 32]> =
-                    SmallVec::new();
-                'walk: loop {
-                    let is_block = ast::BlockExpr::can_cast(node.kind());
+            for (layer_root, parent_idx) in curr_layer.drain(..) {
+                let mut walk_stack: SmallVec<[GreenWalkEvent; 64]> = SmallVec::new();
+                walk_stack.push(GreenWalkEvent::Enter(
+                    layer_root.green().into_owned(),
+                    layer_root.text_range(),
+                ));
+                while let Some(event) = walk_stack.pop() {
+                    let GreenWalkEvent::Enter(green, range) = event else {
+                        blocks.pop();
+                        continue;
+                    };
+                    let syntax_kind = SyntaxKind::from(green.kind().0);
+                    let is_block = ast::BlockExpr::can_cast(syntax_kind);
                     if is_block {
-                        blocks.push((node.clone(), ContainsItems::No));
-                    } else if let Some(kind) = ErasedFileAstId::should_alloc(&node) {
+                        blocks.push((range, ContainsItems::No));
+                        walk_stack.push(GreenWalkEvent::LeaveBlock);
+                    } else if let Some(kind) = ErasedFileAstId::should_alloc(syntax_kind) {
+                        let node = syntax_node_at(&layer_root, syntax_kind, range);
                         // Allocate blocks on-demand, only if they have items.
                         // We don't associate items with blocks, only with items, since block IDs can be quite unstable.
                         // FIXME: Is this the correct thing to do? Macro calls might actually be more incremental if
@@ -647,7 +661,7 @@ impl AstIdMap {
                                 | ErasedFileAstIdKind::Use
                                 | ErasedFileAstIdKind::Impl
                         );
-                        if let Some((last_block_node, already_allocated @ ContainsItems::No)) =
+                        if let Some((last_block_range, already_allocated @ ContainsItems::No)) =
                             blocks.last_mut()
                             && (is_item
                                 || (kind == ErasedFileAstIdKind::MacroCall && {
@@ -661,10 +675,15 @@ impl AstIdMap {
                                 }))
                         {
                             let parent = parent_of(parent_idx, &res);
+                            let block_node = syntax_node_at(
+                                &layer_root,
+                                SyntaxKind::BLOCK_EXPR,
+                                *last_block_range,
+                            );
                             let block_ast_id =
-                                block_expr_ast_id(last_block_node, &mut index_map, parent)
+                                block_expr_ast_id(&block_node, &mut index_map, parent)
                                     .expect("not a BlockExpr");
-                            res.arena.alloc((SyntaxNodePtr::new(last_block_node), block_ast_id));
+                            res.arena.alloc((SyntaxNodePtr::new(&block_node), block_ast_id));
                             *already_allocated = ContainsItems::Yes;
                         }
 
@@ -674,26 +693,20 @@ impl AstIdMap {
                         let idx = res.arena.alloc((SyntaxNodePtr::new(&node), ast_id));
 
                         next_layer.extend(node.children().map(|child| (child, Some(idx))));
-                    } else {
-                        walk_stack.push((node.children(), false));
+                        continue;
                     }
 
-                    if is_block {
-                        walk_stack.push((node.children(), true));
-                    }
-
-                    while let Some((children, is_block)) = walk_stack.last_mut() {
-                        if let Some(child) = children.next() {
-                            node = child;
-                            continue 'walk;
-                        }
-                        let is_block = *is_block;
-                        walk_stack.pop();
-                        if is_block {
-                            blocks.pop();
+                    let mut offset = range.end();
+                    for child in green.children().rev() {
+                        let len = child.text_len();
+                        offset -= len;
+                        if let Some(child) = child.as_node() {
+                            walk_stack.push(GreenWalkEvent::Enter(
+                                (*child).to_owned(),
+                                TextRange::at(offset, len),
+                            ));
                         }
                     }
-                    break 'walk;
                 }
             }
             std::mem::swap(&mut curr_layer, &mut next_layer);
@@ -856,6 +869,14 @@ impl Drop for AstIdMap {
             .send((arena, ptr_map, id_map))
             .unwrap();
     }
+}
+
+fn syntax_node_at(root: &SyntaxNode, kind: SyntaxKind, range: TextRange) -> SyntaxNode {
+    std::iter::successors(Some(root.clone()), |node| {
+        node.child_or_token_at_range(range)?.into_node()
+    })
+    .find(|node| node.kind() == kind && node.text_range() == range)
+    .unwrap_or_else(|| panic!("can't resolve {kind:?}@{range:?} from {root:?}"))
 }
 
 #[inline]
