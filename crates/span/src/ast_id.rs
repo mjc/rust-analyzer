@@ -592,6 +592,7 @@ impl AstIdMap {
     }
 
     pub fn from_source(node: &SyntaxNode) -> AstIdMap {
+        let source_root = node;
         assert!(node.parent().is_none());
         let mut res = AstIdMap::default();
         let mut index_map = ErasedAstIdNextIndexMap::default();
@@ -618,15 +619,12 @@ impl AstIdMap {
         // an ID for it anyway.
         let mut blocks: SmallVec<[(TextRange, ContainsItems); 4]> = SmallVec::new();
         let mut curr_layer = Vec::with_capacity(32);
-        curr_layer.push((node.clone(), None));
+        curr_layer.push((node.green().into_owned(), node.text_range(), None));
         let mut next_layer = Vec::with_capacity(32);
         while !curr_layer.is_empty() {
-            for (layer_root, parent_idx) in curr_layer.drain(..) {
+            for (layer_green, layer_range, parent_idx) in curr_layer.drain(..) {
                 let mut walk_stack: SmallVec<[GreenWalkEvent; 64]> = SmallVec::new();
-                walk_stack.push(GreenWalkEvent::Enter(
-                    layer_root.green().into_owned(),
-                    layer_root.text_range(),
-                ));
+                walk_stack.push(GreenWalkEvent::Enter(layer_green, layer_range));
                 while let Some(event) = walk_stack.pop() {
                     let GreenWalkEvent::Enter(green, range) = event else {
                         blocks.pop();
@@ -638,7 +636,7 @@ impl AstIdMap {
                         blocks.push((range, ContainsItems::No));
                         walk_stack.push(GreenWalkEvent::LeaveBlock);
                     } else if let Some(kind) = ErasedFileAstId::should_alloc(syntax_kind) {
-                        let node = syntax_node_at(&layer_root, syntax_kind, range);
+                        let node = syntax_node_at(source_root, syntax_kind, range);
                         // Allocate blocks on-demand, only if they have items.
                         // We don't associate items with blocks, only with items, since block IDs can be quite unstable.
                         // FIXME: Is this the correct thing to do? Macro calls might actually be more incremental if
@@ -676,7 +674,7 @@ impl AstIdMap {
                         {
                             let parent = parent_of(parent_idx, &res);
                             let block_node = syntax_node_at(
-                                &layer_root,
+                                source_root,
                                 SyntaxKind::BLOCK_EXPR,
                                 *last_block_range,
                             );
@@ -692,7 +690,13 @@ impl AstIdMap {
                             .expect("this node should have an ast id");
                         let idx = res.arena.alloc((SyntaxNodePtr::new(&node), ast_id));
 
-                        next_layer.extend(node.children().map(|child| (child, Some(idx))));
+                        let mut offset = range.start();
+                        next_layer.extend(green.children().filter_map(|child| {
+                            let len = child.text_len();
+                            let range = TextRange::at(offset, len);
+                            offset += len;
+                            child.as_node().map(|child| ((*child).to_owned(), range, Some(idx)))
+                        }));
                         continue;
                     }
 
