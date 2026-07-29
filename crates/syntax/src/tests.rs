@@ -61,6 +61,22 @@ fn static_tokens_are_shared_between_trees() {
 }
 
 #[test]
+fn shared_cache_reuses_dynamic_tokens_between_trees() {
+    let first = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT).syntax_node();
+    let second =
+        SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT).syntax_node();
+
+    let name = |file: &crate::SyntaxNode| {
+        file.descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find(|token| token.kind() == SyntaxKind::IDENT)
+            .unwrap()
+    };
+
+    assert!(std::ptr::eq(name(&first).green(), name(&second).green()));
+}
+
+#[test]
 fn benchmark_parser() {
     if std::env::var("RUN_SLOW_BENCHES").is_err() {
         return;

@@ -1,3 +1,5 @@
+//! Instruction and allocation benchmarks for retained syntax and workspace symbol indexing.
+
 use std::hint::black_box;
 
 use gungraun::{Dhat, prelude::*};
@@ -189,6 +191,22 @@ fn retain_parsed_source_files(sources: Vec<String>) -> (Vec<String>, Vec<SyntaxN
     black_box((sources, syntax_trees))
 }
 
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::tiny_files(setup_tiny_sources())]
+#[bench::empty_raw_string_files(setup_empty_raw_string_sources())]
+#[bench::text_heavy_files(setup_text_heavy_sources())]
+fn retain_shared_parsed_source_files(sources: Vec<String>) -> (Vec<String>, Vec<SyntaxNode>) {
+    let syntax_trees = sources
+        .iter()
+        .map(|source| {
+            SourceFile::parse_with_shared_cache(black_box(source), Edition::CURRENT)
+                .syntax_node()
+                .clone()
+        })
+        .collect();
+    black_box((sources, syntax_trees))
+}
+
 fn setup_macro_token_tree() -> tt::TopSubtree {
     let mut source = String::new();
     for function in 0..256 {
@@ -226,6 +244,7 @@ library_benchmark_group!(
         syntax_token_at_offset,
         parse_source_files,
         retain_parsed_source_files,
+        retain_shared_parsed_source_files,
         token_tree_to_syntax
     ]
 );

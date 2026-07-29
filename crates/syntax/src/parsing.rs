@@ -10,11 +10,26 @@ use crate::{SyntaxError, SyntaxTreeBuilder, syntax_node::GreenNode};
 pub(crate) use crate::parsing::reparsing::incremental_reparse;
 
 pub(crate) fn parse_text(text: &str, edition: parser::Edition) -> (GreenNode, Vec<SyntaxError>) {
+    parse_text_with_builder(text, edition, SyntaxTreeBuilder::default())
+}
+
+pub(crate) fn parse_text_with_shared_cache(
+    text: &str,
+    edition: parser::Edition,
+) -> (GreenNode, Vec<SyntaxError>) {
+    parse_text_with_builder(text, edition, SyntaxTreeBuilder::with_shared_cache())
+}
+
+fn parse_text_with_builder(
+    text: &str,
+    edition: parser::Edition,
+    builder: SyntaxTreeBuilder,
+) -> (GreenNode, Vec<SyntaxError>) {
     let _p = tracing::info_span!("parse_text").entered();
     let lexed = parser::LexedStr::new(edition, text);
     let parser_input = lexed.to_input(edition);
     let parser_output = parser::TopEntryPoint::SourceFile.parse(&parser_input);
-    let (node, errors, _eof) = build_tree(lexed, parser_output);
+    let (node, errors, _eof) = build_tree_with_builder(lexed, parser_output, builder);
     (node, errors)
 }
 
@@ -35,8 +50,15 @@ pub(crate) fn build_tree(
     lexed: parser::LexedStr<'_>,
     parser_output: parser::Output,
 ) -> (GreenNode, Vec<SyntaxError>, bool) {
+    build_tree_with_builder(lexed, parser_output, SyntaxTreeBuilder::default())
+}
+
+fn build_tree_with_builder(
+    lexed: parser::LexedStr<'_>,
+    parser_output: parser::Output,
+    mut builder: SyntaxTreeBuilder,
+) -> (GreenNode, Vec<SyntaxError>, bool) {
     let _p = tracing::info_span!("build_tree").entered();
-    let mut builder = SyntaxTreeBuilder::default();
 
     let is_eof = lexed.intersperse_trivia(&parser_output, &mut |step| match step {
         parser::StrStep::Token { kind, text } => builder.token(kind, text),

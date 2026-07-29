@@ -839,7 +839,7 @@ impl<'a> TtTreeSink<'a> {
             buf: String::new(),
             cursor,
             text_pos: 0.into(),
-            inner: SyntaxTreeBuilder::default(),
+            inner: SyntaxTreeBuilder::with_shared_cache(),
             token_map: SpanMap::with_capacity(token_count),
         }
     }
