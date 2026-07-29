@@ -31,7 +31,7 @@ fn setup_workspace() -> (RootDatabase, Query) {
     (db, query)
 }
 
-#[library_benchmark]
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::workspace(setup_workspace())]
 fn workspace_symbol((db, query): (RootDatabase, Query)) -> usize {
     black_box(world_symbols(&db, query).len())
