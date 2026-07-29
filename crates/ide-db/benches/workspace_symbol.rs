@@ -76,6 +76,22 @@ fn ast_id_map(source: SyntaxNode) -> usize {
     black_box(span::AstIdMap::from_source(&source).len())
 }
 
+fn setup_tiny_ast_id_maps() -> Vec<SyntaxNode> {
+    (0..1024)
+        .map(|function| {
+            SourceFile::parse(&format!("fn function_{function}() {{}}"), Edition::CURRENT)
+                .syntax_node()
+                .clone()
+        })
+        .collect()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::tiny_files(setup_tiny_ast_id_maps())]
+fn tiny_ast_id_maps(sources: Vec<SyntaxNode>) -> usize {
+    black_box(sources.iter().map(|source| span::AstIdMap::from_source(source).len()).sum())
+}
+
 fn setup_nested_ast_id_map() -> SyntaxNode {
     let mut source = String::new();
     for module in 0..32 {
@@ -204,6 +220,7 @@ library_benchmark_group!(
         workspace_symbol,
         build_workspace_symbol,
         ast_id_map,
+        tiny_ast_id_maps,
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
