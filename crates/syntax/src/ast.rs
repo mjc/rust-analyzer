@@ -162,7 +162,7 @@ mod support {
 
     #[inline]
     pub(super) fn child<N: AstNode>(parent: &SyntaxNode) -> Option<N> {
-        parent.children().find_map(N::cast)
+        parent.child_by_kind(N::can_cast).and_then(N::cast)
     }
 
     #[inline]
@@ -172,7 +172,7 @@ mod support {
 
     #[inline]
     pub(super) fn token(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
-        parent.children_with_tokens().filter_map(|it| it.into_token()).find(|it| it.kind() == kind)
+        parent.token_by_kind(kind)
     }
 }
 
