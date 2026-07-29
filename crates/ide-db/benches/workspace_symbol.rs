@@ -8,6 +8,9 @@ use ide_db::{
 };
 use salsa::Setter;
 use syntax::{Edition, SourceFile, SyntaxNode, TextSize};
+use syntax_bridge::{
+    dummy_test_span_utils::DUMMY, parse_to_token_tree_static_span, token_tree_to_syntax_node,
+};
 use test_fixture::{WORKSPACE, WithFixture};
 
 fn setup_workspace_fixture() -> String {
@@ -170,6 +173,31 @@ fn retain_parsed_source_files(sources: Vec<String>) -> (Vec<String>, Vec<SyntaxN
     black_box((sources, syntax_trees))
 }
 
+fn setup_macro_token_tree() -> tt::TopSubtree {
+    let mut source = String::new();
+    for function in 0..256 {
+        source.push_str(&format!(
+            "fn function_{function}() {{ let value_{function} = ({function}, {function}); }}\n"
+        ));
+    }
+    parse_to_token_tree_static_span(Edition::CURRENT, DUMMY, &source).unwrap()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::large_expansion(setup_macro_token_tree())]
+fn token_tree_to_syntax(token_tree: tt::TopSubtree) -> usize {
+    (0..64)
+        .map(|_| {
+            let (parse, span_map) = token_tree_to_syntax_node(
+                black_box(&token_tree),
+                parser::TopEntryPoint::SourceFile,
+                &mut |_| Edition::CURRENT,
+            );
+            u32::from(parse.syntax_node().text_range().len()) as usize + span_map.iter().count()
+        })
+        .sum()
+}
+
 library_benchmark_group!(
     name = workspace_symbol_group,
     benchmarks = [
@@ -180,7 +208,8 @@ library_benchmark_group!(
         syntax_cursor_traversal,
         syntax_token_at_offset,
         parse_source_files,
-        retain_parsed_source_files
+        retain_parsed_source_files,
+        token_tree_to_syntax
     ]
 );
 main!(library_benchmark_groups = workspace_symbol_group);

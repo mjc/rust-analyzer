@@ -1218,10 +1218,12 @@ dependencies = [
  "span",
  "stdx",
  "syntax",
+ "syntax-bridge",
  "test-fixture",
  "test-utils",
  "tracing",
  "triomphe",
+ "tt",
  "vfs",
 ]
 
