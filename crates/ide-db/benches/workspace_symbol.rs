@@ -110,6 +110,18 @@ fn setup_indented_sources() -> Vec<String> {
         .collect()
 }
 
+fn setup_raw_string_sources(payload: &str) -> Vec<String> {
+    (0..256).map(|index| format!("const VALUE_{index}: &str = r#\"{payload}\"#;\n")).collect()
+}
+
+fn setup_empty_raw_string_sources() -> Vec<String> {
+    setup_raw_string_sources("")
+}
+
+fn setup_text_heavy_sources() -> Vec<String> {
+    setup_raw_string_sources(&"x".repeat(4096))
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::tiny_files(setup_tiny_sources())]
 #[bench::indented_files(setup_indented_sources())]
@@ -124,6 +136,18 @@ fn parse_source_files(sources: Vec<String>) -> usize {
         .sum()
 }
 
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::tiny_files(setup_tiny_sources())]
+#[bench::empty_raw_string_files(setup_empty_raw_string_sources())]
+#[bench::text_heavy_files(setup_text_heavy_sources())]
+fn retain_parsed_source_files(sources: Vec<String>) -> (Vec<String>, Vec<SyntaxNode>) {
+    let syntax_trees = sources
+        .iter()
+        .map(|source| SourceFile::parse(black_box(source), Edition::CURRENT).syntax_node().clone())
+        .collect();
+    black_box((sources, syntax_trees))
+}
+
 library_benchmark_group!(
     name = workspace_symbol_group,
     benchmarks = [
@@ -132,7 +156,8 @@ library_benchmark_group!(
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
-        parse_source_files
+        parse_source_files,
+        retain_parsed_source_files
     ]
 );
 main!(library_benchmark_groups = workspace_symbol_group);
