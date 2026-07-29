@@ -17,7 +17,7 @@ use either::Either;
 
 use crate::{
     SyntaxKind,
-    syntax_node::{SyntaxNode, SyntaxNodeChildren, SyntaxToken},
+    syntax_node::{SyntaxNode, SyntaxNodeChildrenByKind, SyntaxToken},
 };
 
 pub use self::{
@@ -95,20 +95,20 @@ pub trait AstToken {
 /// An iterator over `SyntaxNode` children of a particular AST type.
 #[derive(Debug, Clone)]
 pub struct AstChildren<N> {
-    inner: SyntaxNodeChildren,
+    inner: SyntaxNodeChildrenByKind,
     ph: PhantomData<N>,
 }
 
-impl<N> AstChildren<N> {
+impl<N: AstNode> AstChildren<N> {
     fn new(parent: &SyntaxNode) -> Self {
-        AstChildren { inner: parent.children(), ph: PhantomData }
+        AstChildren { inner: parent.children_by_kind(N::can_cast), ph: PhantomData }
     }
 }
 
 impl<N: AstNode> Iterator for AstChildren<N> {
     type Item = N;
     fn next(&mut self) -> Option<N> {
-        self.inner.find_map(N::cast)
+        self.inner.next().and_then(N::cast)
     }
 }
 
@@ -179,6 +179,18 @@ mod support {
 #[test]
 fn assert_ast_is_dyn_compatible() {
     fn _f(_: &dyn AstNode, _: &dyn HasName) {}
+}
+
+#[test]
+fn typed_children_skip_other_node_kinds() {
+    let file =
+        SourceFile::parse("struct First; fn ignored() {} struct Second;", parser::Edition::CURRENT)
+            .ok()
+            .unwrap();
+    let names = support::children::<Struct>(file.syntax())
+        .map(|item| item.name().unwrap().text().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["First", "Second"]);
 }
 
 #[test]

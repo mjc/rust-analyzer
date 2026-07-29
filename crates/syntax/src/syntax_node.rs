@@ -32,6 +32,7 @@ pub type SyntaxNode = rowan::SyntaxNode<RustLanguage>;
 pub type SyntaxToken = rowan::SyntaxToken<RustLanguage>;
 pub type SyntaxElement = rowan::SyntaxElement<RustLanguage>;
 pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<RustLanguage>;
+pub(crate) type SyntaxNodeChildrenByKind = rowan::SyntaxNodeChildrenByKind<RustLanguage>;
 pub type SyntaxElementChildren = rowan::SyntaxElementChildren<RustLanguage>;
 pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
