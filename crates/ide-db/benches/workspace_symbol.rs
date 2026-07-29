@@ -1,6 +1,7 @@
 use std::hint::black_box;
 
 use gungraun::{Dhat, prelude::*};
+use hir::Crate;
 use ide_db::{
     LocalRoots, RootDatabase,
     symbol_index::{Query, world_symbols},
@@ -9,7 +10,7 @@ use salsa::Setter;
 use syntax::{Edition, SourceFile, SyntaxNode, TextSize};
 use test_fixture::{WORKSPACE, WithFixture};
 
-fn setup_workspace() -> (RootDatabase, Query) {
+fn setup_workspace_fixture() -> String {
     let mut fixture = String::from("//- /lib.rs crate:main\n");
     for module in 0..32 {
         fixture.push_str(&format!("pub mod m{module};\n"));
@@ -20,8 +21,11 @@ fn setup_workspace() -> (RootDatabase, Query) {
             fixture.push_str(&format!("pub fn function_{module}_{symbol}() {{}}\n"));
         }
     }
+    fixture
+}
 
-    let (mut db, _) = RootDatabase::with_many_files(&fixture);
+fn workspace(fixture: &str) -> (RootDatabase, Query) {
+    let (mut db, _) = RootDatabase::with_many_files(fixture);
     let mut local_roots = ide_db::FxHashSet::default();
     local_roots.insert(WORKSPACE);
     LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
@@ -31,10 +35,28 @@ fn setup_workspace() -> (RootDatabase, Query) {
     (db, query)
 }
 
+fn setup_workspace() -> (RootDatabase, Query) {
+    workspace(&setup_workspace_fixture())
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::workspace(setup_workspace())]
 fn workspace_symbol((db, query): (RootDatabase, Query)) -> usize {
     black_box(world_symbols(&db, query).len())
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::workspace(setup_workspace_fixture())]
+fn build_workspace_symbol(fixture: String) -> usize {
+    let (db, query) = workspace(black_box(&fixture));
+    let modules =
+        Crate::all(&db).into_iter().flat_map(|krate| krate.modules(&db)).collect::<Vec<_>>();
+    let declarations = modules.iter().map(|module| module.declarations(&db).len()).sum::<usize>();
+    let scope_items = modules.iter().map(|module| module.scope(&db, None).len()).sum::<usize>();
+    assert_eq!(modules.len(), 33);
+    assert_eq!(declarations, 32 * 257);
+    assert_eq!(scope_items, 32 * 257);
+    black_box(modules.len() + declarations + scope_items + world_symbols(&db, query).len())
 }
 
 fn setup_ast_id_map() -> SyntaxNode {
@@ -152,6 +174,7 @@ library_benchmark_group!(
     name = workspace_symbol_group,
     benchmarks = [
         workspace_symbol,
+        build_workspace_symbol,
         ast_id_map,
         nested_ast_id_map,
         syntax_cursor_traversal,
