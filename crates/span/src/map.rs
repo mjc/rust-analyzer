@@ -23,7 +23,12 @@ pub struct SpanMap {
 impl SpanMap {
     /// Creates a new empty [`SpanMap`].
     pub fn empty() -> Self {
-        Self { spans: Vec::new(), matched_arm: None }
+        Self::with_capacity(0)
+    }
+
+    /// Creates a new empty [`SpanMap`] with space for at least `capacity` spans.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { spans: Vec::with_capacity(capacity), matched_arm: None }
     }
 
     /// Finalizes the [`SpanMap`], shrinking its backing storage and validating that the offsets are
