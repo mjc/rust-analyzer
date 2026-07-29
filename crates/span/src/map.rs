@@ -245,3 +245,98 @@ impl RealSpanMap {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    use crate::{EditionedFileId, FileId, SpanAnchor, SyntaxContext};
+
+    use super::*;
+
+    fn span(file: u32, range: TextRange) -> Span {
+        let file_id = EditionedFileId::current_edition(FileId::from_raw(file));
+        Span {
+            range,
+            anchor: SpanAnchor { file_id, ast_id: ROOT_ERASED_FILE_AST_ID },
+            ctx: SyntaxContext::root(file_id.edition()),
+        }
+    }
+
+    #[test]
+    fn span_map_preserves_boundaries_and_bidirectional_lookups() {
+        let a = span(0, TextRange::new(10.into(), 14.into()));
+        let b = span(1, TextRange::new(20.into(), 23.into()));
+        let mut map = SpanMap::with_capacity(3);
+        map.push(2.into(), a);
+        map.push(5.into(), b);
+        map.push(7.into(), a);
+        map.finish();
+
+        assert_eq!(map.span_at(1.into()), a);
+        assert_eq!(map.span_at(2.into()), b);
+        assert_eq!(map.span_at(4.into()), b);
+        assert_eq!(map.span_at(5.into()), a);
+        assert_eq!(map.iter().collect::<Vec<_>>(), [(2.into(), a), (5.into(), b), (7.into(), a)]);
+        assert_eq!(
+            map.ranges_with_span_exact(a).collect::<Vec<_>>(),
+            [
+                (TextRange::new(0.into(), 2.into()), a.ctx),
+                (TextRange::new(5.into(), 7.into()), a.ctx),
+            ]
+        );
+
+        let contained = Span { range: TextRange::new(11.into(), 12.into()), ..a };
+        assert_eq!(
+            map.ranges_with_span(contained).collect::<Vec<_>>(),
+            [
+                (TextRange::new(0.into(), 2.into()), a.ctx),
+                (TextRange::new(5.into(), 7.into()), a.ctx),
+            ]
+        );
+        assert_eq!(
+            map.spans_for_range(TextRange::new(1.into(), 5.into())).collect::<Vec<_>>(),
+            [a, b]
+        );
+
+        let cloned = map.clone();
+        assert_eq!(cloned, map);
+        let mut map_hash = DefaultHasher::new();
+        map.hash(&mut map_hash);
+        let mut cloned_hash = DefaultHasher::new();
+        cloned.hash(&mut cloned_hash);
+        assert_eq!(map_hash.finish(), cloned_hash.finish());
+    }
+
+    #[test]
+    fn span_map_merge_preserves_replaced_and_shifted_boundaries() {
+        let a = span(0, TextRange::new(0.into(), 1.into()));
+        let b = span(1, TextRange::new(1.into(), 2.into()));
+        let c = span(2, TextRange::new(2.into(), 3.into()));
+        let d = span(3, TextRange::new(3.into(), 4.into()));
+        let e = span(4, TextRange::new(4.into(), 5.into()));
+
+        let mut map = SpanMap::with_capacity(3);
+        map.push(2.into(), a);
+        map.push(4.into(), b);
+        map.push(6.into(), c);
+        map.finish();
+
+        let mut other = SpanMap::with_capacity(2);
+        other.push(1.into(), d);
+        other.push(3.into(), e);
+        other.finish();
+
+        map.matched_arm = Some(0);
+        map.merge(TextRange::new(2.into(), 4.into()), 3.into(), &other);
+
+        assert_eq!(
+            map.iter().collect::<Vec<_>>(),
+            [(2.into(), a), (3.into(), d), (5.into(), e), (7.into(), c)]
+        );
+        assert_eq!(map.matched_arm, None);
+    }
+}
