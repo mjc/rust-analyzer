@@ -317,8 +317,6 @@ impl<'a> Converter<'a> {
     }
 
     fn extend_literal(&mut self, len: usize, kind: &rustc_lexer::LiteralKind) {
-        let invalid_raw_msg = String::from("Invalid raw string literal");
-
         let mut errors = vec![];
         let mut no_end_quote = |c: char, kind: &str| {
             errors.push(format!("Missing trailing `{c}` symbol to terminate the {kind} literal"));
@@ -405,19 +403,19 @@ impl<'a> Converter<'a> {
             }
             rustc_lexer::LiteralKind::RawStr { n_hashes } => {
                 if n_hashes.is_none() {
-                    errors.push(invalid_raw_msg);
+                    errors.push("Invalid raw string literal".into());
                 }
                 STRING
             }
             rustc_lexer::LiteralKind::RawByteStr { n_hashes } => {
                 if n_hashes.is_none() {
-                    errors.push(invalid_raw_msg);
+                    errors.push("Invalid raw string literal".into());
                 }
                 BYTE_STRING
             }
             rustc_lexer::LiteralKind::RawCStr { n_hashes } => {
                 if n_hashes.is_none() {
-                    errors.push(invalid_raw_msg);
+                    errors.push("Invalid raw string literal".into());
                 }
                 C_STRING
             }
