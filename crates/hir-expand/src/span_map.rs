@@ -76,36 +76,45 @@ pub(crate) fn real_span_map(
 
     let item_to_entry =
         |item: ast::Item| (item.syntax().text_range().start(), ast_id_map.ast_id(&item).erase());
-    // Top level items make for great anchors as they are the most stable and a decent boundary
-    pairs.extend(tree.items().map(item_to_entry));
+    let mut nested_pairs = Vec::new();
     // Unfortunately, assoc items are very common in Rust, so descend into those as well and make
     // them anchors too, but only if they have no attributes attached, as those might be proc-macros
     // and using different anchors inside of them will prevent spans from being joinable.
-    tree.items().for_each(|item| match &item {
-        ast::Item::ExternBlock(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(extern_item_list) = it.extern_item_list() {
-                pairs.extend(
-                    extern_item_list.extern_items().map(ast::Item::from).map(item_to_entry),
-                );
+    for item in tree.items() {
+        // Top level items make for great anchors as they are the most stable and a decent boundary.
+        pairs.push(item_to_entry(item.clone()));
+        match &item {
+            ast::Item::ExternBlock(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(extern_item_list) = it.extern_item_list() {
+                    nested_pairs.extend(
+                        extern_item_list.extern_items().map(ast::Item::from).map(item_to_entry),
+                    );
+                }
             }
-        }
-        ast::Item::Impl(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(assoc_item_list) = it.assoc_item_list() {
-                pairs.extend(assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry));
+            ast::Item::Impl(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(assoc_item_list) = it.assoc_item_list() {
+                    nested_pairs.extend(
+                        assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry),
+                    );
+                }
             }
-        }
-        ast::Item::Module(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(item_list) = it.item_list() {
-                pairs.extend(item_list.items().map(item_to_entry));
+            ast::Item::Module(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(item_list) = it.item_list() {
+                    nested_pairs.extend(item_list.items().map(item_to_entry));
+                }
             }
-        }
-        ast::Item::Trait(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(assoc_item_list) = it.assoc_item_list() {
-                pairs.extend(assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry));
+            ast::Item::Trait(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(assoc_item_list) = it.assoc_item_list() {
+                    nested_pairs.extend(
+                        assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry),
+                    );
+                }
             }
+            _ => (),
         }
-        _ => (),
-    });
+    }
+    // Keep the existing top-level-then-nested anchor order without traversing top-level items twice.
+    pairs.extend(nested_pairs);
 
     RealSpanMap::from_file(
         editioned_file_id.span_file_id(db),
