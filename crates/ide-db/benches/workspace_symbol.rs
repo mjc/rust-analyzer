@@ -319,7 +319,7 @@ fn retain_shared_parsed_source_files(sources: Vec<String>) -> (Vec<String>, Vec<
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::many_unique_files(setup_shared_cache_churn_sources())]
 fn fill_shared_parse_cache(sources: Vec<String>) -> usize {
-    black_box(
+    let parsed_bytes = black_box(
         sources
             .iter()
             .map(|source| {
@@ -331,7 +331,30 @@ fn fill_shared_parse_cache(sources: Vec<String>) -> usize {
                 ) as usize
             })
             .sum(),
-    )
+    );
+    syntax::clear_shared_parse_cache();
+    parsed_bytes
+}
+
+fn setup_populated_shared_parse_cache() -> usize {
+    setup_tiny_sources()
+        .iter()
+        .map(|source| {
+            u32::from(
+                SourceFile::parse_with_shared_cache(source, Edition::CURRENT)
+                    .syntax_node()
+                    .text_range()
+                    .len(),
+            ) as usize
+        })
+        .sum()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::tiny_files(setup_populated_shared_parse_cache())]
+fn clear_shared_parse_cache(parsed_bytes: usize) -> usize {
+    syntax::clear_shared_parse_cache();
+    black_box(parsed_bytes)
 }
 
 fn setup_macro_token_tree() -> tt::TopSubtree {
@@ -425,6 +448,7 @@ library_benchmark_group!(
         retain_parsed_source_files,
         retain_shared_parsed_source_files,
         fill_shared_parse_cache,
+        clear_shared_parse_cache,
         token_tree_to_syntax,
         syntax_to_token_tree_green,
         syntax_to_token_tree_event

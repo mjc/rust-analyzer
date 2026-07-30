@@ -112,6 +112,13 @@ const MAX_SHARED_SPACES: usize = 32;
 static WHITESPACE_TOKENS: [[OnceLock<GreenToken>; MAX_SHARED_SPACES + 1]; MAX_SHARED_NEWLINES + 1] =
     [const { [const { OnceLock::new() }; MAX_SHARED_SPACES + 1] }; MAX_SHARED_NEWLINES + 1];
 
+#[doc(hidden)]
+pub fn clear_shared_parse_cache() {
+    if let Some(cache) = SHARED_NODE_CACHE.get() {
+        cache.clear();
+    }
+}
+
 fn shared_whitespace(text: &str) -> Option<&'static OnceLock<GreenToken>> {
     let bytes = text.as_bytes();
     let newlines = bytes.iter().take_while(|&&byte| byte == b'\n').count();

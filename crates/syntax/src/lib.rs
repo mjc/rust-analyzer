@@ -53,7 +53,7 @@ pub use crate::{
     syntax_node::{
         PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxElementChildren, SyntaxGreenToken,
         SyntaxGreenTokens, SyntaxNode, SyntaxNodeChildren, SyntaxToken, SyntaxTreeBuilder,
-        green_tokens,
+        clear_shared_parse_cache, green_tokens,
     },
     token_text::TokenText,
 };

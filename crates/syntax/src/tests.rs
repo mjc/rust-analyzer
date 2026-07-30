@@ -108,6 +108,19 @@ fn repeated_parse_access_preserves_syntax_identity() {
 }
 
 #[test]
+fn clearing_shared_cache_preserves_parse_results() {
+    let source = "fn same() { let value = ; }";
+    let first = SourceFile::parse_with_shared_cache(source, Edition::CURRENT);
+
+    crate::clear_shared_parse_cache();
+
+    let second = SourceFile::parse_with_shared_cache(source, Edition::CURRENT);
+    assert_eq!(first.syntax_node().text().to_string(), source);
+    assert_eq!(second.syntax_node().text().to_string(), source);
+    assert_eq!(first.errors(), second.errors());
+}
+
+#[test]
 fn shared_cache_is_thread_safe() {
     std::thread::scope(|scope| {
         for thread in 0..8 {

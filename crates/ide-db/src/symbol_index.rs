@@ -801,9 +801,9 @@ pub(self) use crate::Trait as IsThisJustATrait;
         let after_result_drop = profile::memory_usage();
         let after_result_drop_pss = read_pss_kib();
 
-        use salsa::Database as _;
         let gc_start = std::time::Instant::now();
         db.trigger_lru_eviction();
+        profile::trim_memory();
         let gc_elapsed = gc_start.elapsed();
         let after_gc = profile::memory_usage();
         let after_gc_pss = read_pss_kib();
@@ -852,7 +852,6 @@ pub(self) use crate::Trait as IsThisJustATrait;
         query.exact();
         assert_eq!(world_symbols(&db, query).len(), 1);
 
-        use salsa::Database as _;
         db.trigger_lru_eviction();
 
         let mut query = Query::new("function_128".to_owned());
@@ -932,7 +931,6 @@ pub fn old_symbol() {}
         assert_eq!(first_result, 1);
         assert_eq!(second_result, 1);
 
-        use salsa::Database as _;
         db.trigger_lru_eviction();
         let mut query = Query::new("function_2_13".to_owned());
         query.exact();

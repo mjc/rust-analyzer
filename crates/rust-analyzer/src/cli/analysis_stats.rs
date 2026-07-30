@@ -27,11 +27,7 @@ use ide::{
     Analysis, AnalysisHost, AnnotationConfig, DiagnosticsConfig, Edition, InlayFieldsToResolve,
     InlayHintsConfig, LineCol, RaFixtureConfig, RootDatabase,
 };
-use ide_db::{
-    EditionedFileId, SnippetCap,
-    base_db::{SourceDatabase, salsa::Database},
-    line_index,
-};
+use ide_db::{EditionedFileId, SnippetCap, base_db::SourceDatabase, line_index};
 use itertools::Itertools;
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace};
 use oorandom::Rand32;
