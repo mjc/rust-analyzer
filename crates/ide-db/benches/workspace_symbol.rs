@@ -71,6 +71,17 @@ fn setup_filtered_attr_item_tree_fixture() -> String {
     fixture
 }
 
+fn setup_token_tree_attr_item_tree_fixture() -> String {
+    init_single_thread_rayon();
+    let mut fixture = String::from("//- /lib.rs crate:main\n");
+    for item in 0..1024 {
+        fixture.push_str(&format!(
+            "#[custom(foo, bar = \"baz\")]\npub const ATTR_ITEM_{item}: () = ();\n"
+        ));
+    }
+    fixture
+}
+
 fn setup_large_symbol_index() -> (RootDatabase, Module) {
     init_single_thread_rayon();
     let mut fixture = String::from("//- /lib.rs crate:main\n");
@@ -123,6 +134,17 @@ fn build_named_item_tree(fixture: String) -> usize {
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::filtered_attrs(setup_filtered_attr_item_tree_fixture())]
 fn build_filtered_attr_item_tree(fixture: String) -> usize {
+    let (db, _) = RootDatabase::with_many_files(black_box(&fixture));
+    let declarations = Crate::all(&db)
+        .into_iter()
+        .flat_map(|krate| krate.modules(&db))
+        .flat_map(|module| module.declarations(&db));
+    black_box(declarations.count())
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::token_tree_attrs(setup_token_tree_attr_item_tree_fixture())]
+fn build_token_tree_attr_item_tree(fixture: String) -> usize {
     let (db, _) = RootDatabase::with_many_files(black_box(&fixture));
     let declarations = Crate::all(&db)
         .into_iter()
@@ -307,6 +329,7 @@ library_benchmark_group!(
         build_module_symbol_index,
         build_named_item_tree,
         build_filtered_attr_item_tree,
+        build_token_tree_attr_item_tree,
         ast_id_map,
         tiny_ast_id_maps,
         nested_ast_id_map,
