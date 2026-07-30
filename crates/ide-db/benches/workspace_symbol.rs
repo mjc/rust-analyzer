@@ -1,6 +1,6 @@
 //! Instruction and allocation benchmarks for retained syntax and workspace symbol indexing.
 
-use std::{hint::black_box, sync::Once};
+use std::{fmt::Write, hint::black_box, sync::Once};
 
 use gungraun::{Dhat, prelude::*};
 use hir::{Crate, Module};
@@ -258,6 +258,22 @@ fn setup_text_heavy_sources() -> Vec<String> {
     setup_raw_string_sources(&"x".repeat(4096))
 }
 
+fn setup_shared_cache_churn_sources() -> Vec<String> {
+    (0..4096)
+        .map(|file| {
+            let mut source = String::new();
+            for item in 0..64 {
+                writeln!(
+                    source,
+                    "pub fn function_{file}_{item}() -> usize {{ let value_{file}_{item} = {file} + {item}; value_{file}_{item} }}"
+                )
+                .unwrap();
+            }
+            source
+        })
+        .collect()
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::tiny_files(setup_tiny_sources())]
 #[bench::indented_files(setup_indented_sources())]
@@ -298,6 +314,24 @@ fn retain_shared_parsed_source_files(sources: Vec<String>) -> (Vec<String>, Vec<
         })
         .collect();
     black_box((sources, syntax_trees))
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::many_unique_files(setup_shared_cache_churn_sources())]
+fn fill_shared_parse_cache(sources: Vec<String>) -> usize {
+    black_box(
+        sources
+            .iter()
+            .map(|source| {
+                u32::from(
+                    SourceFile::parse_with_shared_cache(black_box(source), Edition::CURRENT)
+                        .syntax_node()
+                        .text_range()
+                        .len(),
+                ) as usize
+            })
+            .sum(),
+    )
 }
 
 fn setup_macro_token_tree() -> tt::TopSubtree {
@@ -390,6 +424,7 @@ library_benchmark_group!(
         parse_source_files,
         retain_parsed_source_files,
         retain_shared_parsed_source_files,
+        fill_shared_parse_cache,
         token_tree_to_syntax,
         syntax_to_token_tree_green,
         syntax_to_token_tree_event
