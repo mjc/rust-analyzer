@@ -3,10 +3,10 @@
 use std::{hint::black_box, sync::Once};
 
 use gungraun::{Dhat, prelude::*};
-use hir::Crate;
+use hir::{Crate, Module};
 use ide_db::{
     LocalRoots, RootDatabase,
-    symbol_index::{Query, world_symbols},
+    symbol_index::{Query, SymbolIndex, world_symbols},
 };
 use rayon::ThreadPoolBuilder;
 use salsa::Setter;
@@ -16,12 +16,15 @@ use syntax_bridge::{
 };
 use test_fixture::{WORKSPACE, WithFixture};
 
-fn setup_workspace_fixture() -> String {
+fn init_single_thread_rayon() {
     static RAYON: Once = Once::new();
     RAYON.call_once(|| {
         ThreadPoolBuilder::new().num_threads(1).use_current_thread().build_global().unwrap()
     });
+}
 
+fn setup_workspace_fixture() -> String {
+    init_single_thread_rayon();
     let mut fixture = String::from("//- /lib.rs crate:main\n");
     for module in 0..32 {
         fixture.push_str(&format!("pub mod m{module};\n"));
@@ -58,6 +61,18 @@ fn setup_named_item_tree_fixture() -> String {
     fixture
 }
 
+fn setup_large_symbol_index() -> (RootDatabase, Module) {
+    init_single_thread_rayon();
+    let mut fixture = String::from("//- /lib.rs crate:main\n");
+    for symbol in 0..8192 {
+        fixture.push_str(&format!("pub fn Function_{symbol}() {{}}\n"));
+    }
+    let (db, _) = workspace(&fixture);
+    let module = Crate::all(&db).into_iter().next().unwrap().root_module(&db);
+    black_box(module.declarations(&db).len());
+    (db, module)
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::workspace(setup_workspace())]
 fn workspace_symbol((db, query): (RootDatabase, Query)) -> usize {
@@ -76,6 +91,12 @@ fn build_workspace_symbol(fixture: String) -> usize {
     assert_eq!(declarations, 32 * 257);
     assert_eq!(scope_items, 32 * 257);
     black_box(modules.len() + declarations + scope_items + world_symbols(&db, query).len())
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::large_module(setup_large_symbol_index())]
+fn build_module_symbol_index((db, module): (RootDatabase, Module)) -> usize {
+    black_box(SymbolIndex::module_symbols(&db, module).len())
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
@@ -262,6 +283,7 @@ library_benchmark_group!(
     benchmarks = [
         workspace_symbol,
         build_workspace_symbol,
+        build_module_symbol_index,
         build_named_item_tree,
         ast_id_map,
         tiny_ast_id_maps,
