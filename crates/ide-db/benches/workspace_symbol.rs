@@ -4,6 +4,7 @@ use std::{fmt::Write, hint::black_box, sync::Once};
 
 use gungraun::{Dhat, prelude::*};
 use hir::{Crate, Module};
+use ide_db::base_db::SourceDatabase;
 use ide_db::{
     LocalRoots, RootDatabase,
     symbol_index::{Query, SymbolIndex, world_symbols},
@@ -55,6 +56,34 @@ fn workspace(fixture: &str) -> (RootDatabase, Query) {
 
 fn setup_workspace() -> (RootDatabase, Query) {
     workspace(&setup_workspace_fixture())
+}
+
+fn setup_file_text_fixture() -> String {
+    let mut fixture = String::new();
+    for file in 0..128 {
+        if file == 0 {
+            writeln!(fixture, "//- /lib.rs crate:main").unwrap();
+        } else {
+            writeln!(fixture, "//- /file_{file}.rs").unwrap();
+        }
+        for item in 0..128 {
+            writeln!(
+                fixture,
+                "pub fn function_{file}_{item}() -> usize {{ let value = {file} + {item}; value }}"
+            )
+            .unwrap();
+        }
+    }
+    fixture
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::rust_sources(setup_file_text_fixture())]
+fn retain_file_texts(fixture: String) -> (RootDatabase, usize) {
+    let (db, files) = RootDatabase::with_many_files(black_box(&fixture));
+    let retained_bytes =
+        files.into_iter().map(|file| db.file_text(file.file_id(&db)).text(&db).len()).sum();
+    black_box((db, retained_bytes))
 }
 
 fn setup_named_item_tree_fixture() -> String {
@@ -436,6 +465,7 @@ library_benchmark_group!(
         workspace_symbol,
         build_workspace_symbol,
         build_module_symbol_index,
+        retain_file_texts,
         build_named_item_tree,
         build_filtered_attr_item_tree,
         build_token_tree_attr_item_tree,
