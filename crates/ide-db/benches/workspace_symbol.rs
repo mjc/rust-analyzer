@@ -1,6 +1,6 @@
 //! Instruction and allocation benchmarks for retained syntax and workspace symbol indexing.
 
-use std::hint::black_box;
+use std::{hint::black_box, sync::Once};
 
 use gungraun::{Dhat, prelude::*};
 use hir::Crate;
@@ -8,6 +8,7 @@ use ide_db::{
     LocalRoots, RootDatabase,
     symbol_index::{Query, world_symbols},
 };
+use rayon::ThreadPoolBuilder;
 use salsa::Setter;
 use syntax::{Edition, SourceFile, SyntaxNode, TextSize};
 use syntax_bridge::{
@@ -16,6 +17,11 @@ use syntax_bridge::{
 use test_fixture::{WORKSPACE, WithFixture};
 
 fn setup_workspace_fixture() -> String {
+    static RAYON: Once = Once::new();
+    RAYON.call_once(|| {
+        ThreadPoolBuilder::new().num_threads(1).use_current_thread().build_global().unwrap()
+    });
+
     let mut fixture = String::from("//- /lib.rs crate:main\n");
     for module in 0..32 {
         fixture.push_str(&format!("pub mod m{module};\n"));
