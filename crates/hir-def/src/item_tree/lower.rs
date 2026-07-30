@@ -365,8 +365,10 @@ impl<'db> Ctx<'db> {
     }
 
     fn lower_visibility(&mut self, item: &dyn ast::HasVisibility) -> RawVisibilityId {
-        let vis = visibility_from_ast(self.db, item.visibility(), &mut |range| {
-            self.span_map().span_for_range(range).ctx
+        let vis = simple_visibility(item.syntax()).unwrap_or_else(|| {
+            visibility_from_ast(self.db, item.visibility(), &mut |range| {
+                self.span_map().span_for_range(range).ctx
+            })
         });
         match &vis {
             RawVisibility::Public => RawVisibilityId::PUB,
@@ -461,6 +463,57 @@ fn direct_name(node: &SyntaxNode) -> Option<Name> {
         .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::NAME)?;
     let text = name.children().next().and_then(NodeOrToken::into_token)?.text();
     Some(Name::new_root(text))
+}
+
+fn simple_visibility(node: &SyntaxNode) -> Option<RawVisibility> {
+    let green = node.green();
+    let Some(visibility) = green
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::VISIBILITY)
+    else {
+        return Some(private_vis());
+    };
+    let Some(inner) = visibility
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::VISIBILITY_INNER)
+    else {
+        return Some(RawVisibility::Public);
+    };
+    let Some(path) = inner
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::PATH)
+    else {
+        return Some(RawVisibility::Public);
+    };
+    if path.children().any(|child| {
+        child.as_node().is_some_and(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::PATH)
+            || child
+                .as_token()
+                .is_some_and(|token| SyntaxKind::from(token.kind().0) == SyntaxKind::COLON2)
+    }) {
+        return None;
+    }
+    let segment = path
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::PATH_SEGMENT)?;
+    let name_ref = segment
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::NAME_REF)?;
+    let kind = name_ref.children().find_map(NodeOrToken::into_token)?.kind();
+    match SyntaxKind::from(kind.0) {
+        SyntaxKind::CRATE_KW => Some(RawVisibility::PubCrate),
+        SyntaxKind::SUPER_KW => Some(RawVisibility::Module(
+            Interned::new(ModPath::from_kind(PathKind::Super(1))),
+            VisibilityExplicitness::Explicit,
+        )),
+        SyntaxKind::SELF_KW => Some(RawVisibility::PubSelf(VisibilityExplicitness::Explicit)),
+        _ => None,
+    }
 }
 
 pub(crate) fn lower_use_tree(
