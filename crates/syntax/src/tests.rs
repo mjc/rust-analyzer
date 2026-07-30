@@ -73,7 +73,34 @@ fn shared_cache_reuses_dynamic_tokens_between_trees() {
             .unwrap()
     };
 
+    assert_ne!(first, second);
+    assert_ne!(name(&first), name(&second));
     assert!(std::ptr::eq(name(&first).green(), name(&second).green()));
+}
+
+#[test]
+fn repeated_parse_access_preserves_syntax_identity() {
+    let parse = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT);
+
+    assert_eq!(parse.syntax_node(), parse.syntax_node());
+}
+
+#[test]
+fn shared_cache_is_thread_safe() {
+    std::thread::scope(|scope| {
+        for thread in 0..8 {
+            scope.spawn(move || {
+                for item in 0..1024 {
+                    let source = format!(
+                        "fn shared() {{ let value = ({thread}, {item}); if true {{ shared(); }} }}"
+                    );
+                    let parse = SourceFile::parse_with_shared_cache(&source, Edition::CURRENT);
+                    assert_eq!(parse.syntax_node(), parse.syntax_node());
+                    assert_eq!(parse.syntax_node().text().to_string(), source);
+                }
+            });
+        }
+    });
 }
 
 #[test]

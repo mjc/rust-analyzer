@@ -69,30 +69,45 @@ pub use smol_str::{SmolStr, SmolStrBuilder, ToSmolStr, format_smolstr};
 ///
 /// Note that we always produce a syntax tree, even for completely invalid
 /// files.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Parse<T> {
     green: Option<GreenNode>,
     errors: Option<Arc<[SyntaxError]>>,
+    tree_id: rowan::SyntaxTreeId,
     _ty: PhantomData<fn() -> T>,
 }
 
 impl<T> Clone for Parse<T> {
     fn clone(&self) -> Parse<T> {
-        Parse { green: self.green.clone(), errors: self.errors.clone(), _ty: PhantomData }
+        Parse {
+            green: self.green.clone(),
+            errors: self.errors.clone(),
+            tree_id: self.tree_id,
+            _ty: PhantomData,
+        }
     }
 }
+
+impl<T> PartialEq for Parse<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.green == other.green && self.errors == other.errors
+    }
+}
+
+impl<T> Eq for Parse<T> {}
 
 impl<T> Parse<T> {
     fn new(green: GreenNode, errors: Vec<SyntaxError>) -> Parse<T> {
         Parse {
             green: Some(green),
             errors: if errors.is_empty() { None } else { Some(errors.into()) },
+            tree_id: rowan::SyntaxTreeId::default(),
             _ty: PhantomData,
         }
     }
 
     pub fn syntax_node(&self) -> SyntaxNode {
-        SyntaxNode::new_root(self.green.as_ref().unwrap().clone())
+        SyntaxNode::new_root_with_id(self.green.as_ref().unwrap().clone(), self.tree_id)
     }
 
     pub fn errors(&self) -> Vec<SyntaxError> {
@@ -107,7 +122,7 @@ impl<T: AstNode> Parse<T> {
     pub fn to_syntax(mut self) -> Parse<SyntaxNode> {
         let green = self.green.take();
         let errors = self.errors.take();
-        Parse { green, errors, _ty: PhantomData }
+        Parse { green, errors, tree_id: self.tree_id, _ty: PhantomData }
     }
 
     /// Gets the parsed syntax tree as a typed ast node.
@@ -132,7 +147,12 @@ impl<T: AstNode> Parse<T> {
 impl Parse<SyntaxNode> {
     pub fn cast<N: AstNode>(mut self) -> Option<Parse<N>> {
         if N::cast(self.syntax_node()).is_some() {
-            Some(Parse { green: self.green.take(), errors: self.errors.take(), _ty: PhantomData })
+            Some(Parse {
+                green: self.green.take(),
+                errors: self.errors.take(),
+                tree_id: self.tree_id,
+                _ty: PhantomData,
+            })
         } else {
             None
         }
@@ -167,11 +187,7 @@ impl Parse<SourceFile> {
             self.errors.as_deref().unwrap_or_default().iter().cloned(),
             edition,
         )
-        .map(|(green_node, errors, _reparsed_range)| Parse {
-            green: Some(green_node),
-            errors: if errors.is_empty() { None } else { Some(errors.into()) },
-            _ty: PhantomData,
-        })
+        .map(|(green_node, errors, _reparsed_range)| Parse::new(green_node, errors))
     }
 
     fn full_reparse(&self, delete: TextRange, insert: &str, edition: Edition) -> Parse<SourceFile> {
@@ -193,14 +209,15 @@ impl ast::Expr {
     pub fn parse(text: &str, edition: Edition) -> Parse<ast::Expr> {
         let _p = tracing::info_span!("Expr::parse").entered();
         let (green, errors) = parsing::parse_text_at(text, parser::TopEntryPoint::Expr, edition);
-        let root = SyntaxNode::new_root(green.clone());
+        let parse = Parse::new(green, errors);
+        let kind = parse.syntax_node().kind();
 
         assert!(
-            ast::Expr::can_cast(root.kind()) || root.kind() == SyntaxKind::ERROR,
+            ast::Expr::can_cast(kind) || kind == SyntaxKind::ERROR,
             "{:?} isn't an expression",
-            root.kind()
+            kind
         );
-        Parse::new(green, errors)
+        parse
     }
 }
 
@@ -257,10 +274,10 @@ impl SourceFile {
         } else {
             parsing::parse_text(text, edition)
         };
-        let root = SyntaxNode::new_root(green.clone());
+        let parse = Parse::new(green, errors);
 
-        assert_eq!(root.kind(), SyntaxKind::SOURCE_FILE);
-        Parse::new(green, errors)
+        assert_eq!(parse.syntax_node().kind(), SyntaxKind::SOURCE_FILE);
+        parse
     }
 }
 
