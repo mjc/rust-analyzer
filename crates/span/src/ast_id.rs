@@ -22,6 +22,7 @@
 
 use std::{
     any::type_name,
+    borrow::Cow,
     fmt,
     hash::{BuildHasher, Hash, Hasher},
     marker::PhantomData,
@@ -31,8 +32,7 @@ use la_arena::{Arena, Idx, RawIdx};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use smallvec::SmallVec;
 use syntax::{
-    AstNode, AstPtr, GreenNode, SyntaxKind, SyntaxNode, SyntaxNodePtr, TextRange,
-    ast::{self, HasName},
+    AstNode, AstPtr, GreenNode, NodeOrToken, SyntaxKind, SyntaxNode, SyntaxNodePtr, TextRange, ast,
     match_ast,
 };
 
@@ -461,8 +461,23 @@ register_enum_ast_id! {
     AssocItem
 }
 
+fn direct_child_text(node: &SyntaxNode, kind: SyntaxKind) -> &str {
+    match node.green() {
+        Cow::Borrowed(green) => green
+            .children()
+            .find_map(|child| {
+                let child = child.as_node()?;
+                (SyntaxKind::from(child.kind().0) == kind).then(|| {
+                    child.children().next().and_then(NodeOrToken::into_token).unwrap().text()
+                })
+            })
+            .unwrap_or(""),
+        Cow::Owned(_) => unreachable!(),
+    }
+}
+
 macro_rules! register_has_name_ast_id {
-    (impl $AstIdNode:ident for $($ident:ident = $name_method:ident),+ ) => {
+    (impl $AstIdNode:ident for $($ident:ident = $name_kind:ident),+ ) => {
         $(
             impl $AstIdNode for ast::$ident {}
         )+
@@ -472,8 +487,7 @@ macro_rules! register_has_name_ast_id {
                 match node {
                     $(
                         ast::$ident(node) => {
-                            let name = node.$name_method();
-                            let name = name.as_ref().map_or("", |it| it.text_non_mutable());
+                            let name = direct_child_text(node.syntax(), SyntaxKind::$name_kind);
                             let result = ErasedHasNameFileAstId {
                                 name,
                             };
@@ -492,19 +506,19 @@ macro_rules! register_has_name_ast_id {
 }
 register_has_name_ast_id! {
     impl AstIdNode for
-        Enum = name,
-        Struct = name,
-        Union = name,
-        ExternCrate = name_ref,
-        MacroDef = name,
-        MacroRules = name,
-        Module = name,
-        Static = name,
-        Trait = name
+        Enum = NAME,
+        Struct = NAME,
+        Union = NAME,
+        ExternCrate = NAME_REF,
+        MacroDef = NAME,
+        MacroRules = NAME,
+        Module = NAME,
+        Static = NAME,
+        Trait = NAME
 }
 
 macro_rules! register_assoc_item_ast_id {
-    (impl $AstIdNode:ident for $($ident:ident = $name_callback:expr),+ ) => {
+    (impl $AstIdNode:ident for $($ident:ident),+ ) => {
         $(
             impl $AstIdNode for ast::$ident {}
         )+
@@ -518,8 +532,7 @@ macro_rules! register_assoc_item_ast_id {
                 match node {
                     $(
                         ast::$ident(node) => {
-                            let name = $name_callback(node);
-                            let name = name.as_ref().map_or("", |it| it.text_non_mutable());
+                            let name = direct_child_text(node.syntax(), SyntaxKind::NAME);
                             let properties = ErasedHasNameFileAstId {
                                 name,
                             };
@@ -530,24 +543,38 @@ macro_rules! register_assoc_item_ast_id {
                             Some(index_map.new_id(ErasedFileAstIdKind::$ident, result))
                         },
                     )*
+                    ast::MacroCall(node) => {
+                        let name =
+                            node.path().and_then(|path| path.segment()?.name_ref());
+                        let name = name.as_ref().map_or("", |it| it.text_non_mutable());
+                        let properties = ErasedHasNameFileAstId {
+                            name,
+                        };
+                        let result = ErasedAssocItemFileAstId {
+                            parent: parent.copied(),
+                            properties,
+                        };
+                        Some(index_map.new_id(ErasedFileAstIdKind::MacroCall, result))
+                    },
                     _ => None,
                 }
             }
         }
 
         fn should_alloc_assoc_item(kind: SyntaxKind) -> Option<ErasedFileAstIdKind> {
-            $( if ast::$ident::can_cast(kind) { Some(ErasedFileAstIdKind::$ident) } else )* { None }
+            $( if ast::$ident::can_cast(kind) { Some(ErasedFileAstIdKind::$ident) } else )*
+            if ast::MacroCall::can_cast(kind) { Some(ErasedFileAstIdKind::MacroCall) } else { None }
         }
     };
 }
 register_assoc_item_ast_id! {
     impl AstIdNode for
-    Variant = |it: ast::Variant| it.name(),
-    Const = |it: ast::Const| it.name(),
-    Fn = |it: ast::Fn| it.name(),
-    MacroCall = |it: ast::MacroCall| it.path().and_then(|path| path.segment()?.name_ref()),
-    TypeAlias = |it: ast::TypeAlias| it.name()
+    Variant,
+    Const,
+    Fn,
+    TypeAlias
 }
+impl AstIdNode for ast::MacroCall {}
 
 /// Maps items' `SyntaxNode`s to `ErasedFileAstId`s and back.
 #[derive(Default)]
