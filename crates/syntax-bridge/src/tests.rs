@@ -1,5 +1,5 @@
 use expect_test::expect;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use span::Span;
 use syntax::{AstNode, ast};
 use test_utils::extract_annotations;
@@ -8,7 +8,8 @@ use tt::{Leaf, Punct, Spacing, buffer::Cursor};
 use crate::{
     DocCommentDesugarMode,
     dummy_test_span_utils::{DUMMY, DummyTestSpanMap},
-    parse_to_token_tree_static_span, syntax_node_to_token_tree, token_tree_to_syntax_node,
+    parse_to_token_tree_static_span, syntax_node_to_token_tree, syntax_node_to_token_tree_modified,
+    token_tree_to_syntax_node,
 };
 
 fn check_punct_spacing(fixture: &str) {
@@ -47,6 +48,31 @@ fn check_punct_spacing(fixture: &str) {
     }
 
     assert!(annotations.is_empty(), "unchecked annotations: {annotations:?}");
+}
+
+#[test]
+fn green_token_conversion_matches_event_conversion() {
+    for fixture in [
+        "#[custom(foo, bar = \"baz\")] fn item<'a>() { let _ = a::b::<1>(); }",
+        "/// outer\n//! inner\nfn item() { /* ordinary */ }",
+        "fn incomplete() { (a + b]",
+    ] {
+        let source_file = ast::SourceFile::parse(fixture, span::Edition::CURRENT).syntax_node();
+        for mode in [DocCommentDesugarMode::Mbe, DocCommentDesugarMode::ProcMacro] {
+            let fast = syntax_node_to_token_tree(&source_file, DummyTestSpanMap, DUMMY, mode);
+            let event_based = syntax_node_to_token_tree_modified(
+                &source_file,
+                DummyTestSpanMap,
+                FxHashMap::default(),
+                FxHashSet::default(),
+                DUMMY,
+                mode,
+                |_, _| (true, Vec::new()),
+            );
+
+            assert_eq!(fast, event_based);
+        }
+    }
 }
 
 #[test]

@@ -9,10 +9,14 @@ use ide_db::{
     symbol_index::{Query, SymbolIndex, world_symbols},
 };
 use rayon::ThreadPoolBuilder;
+use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::Setter;
 use syntax::{Edition, SourceFile, SyntaxNode, TextSize};
 use syntax_bridge::{
-    dummy_test_span_utils::DUMMY, parse_to_token_tree_static_span, token_tree_to_syntax_node,
+    DocCommentDesugarMode,
+    dummy_test_span_utils::{DUMMY, DummyTestSpanMap},
+    parse_to_token_tree_static_span, syntax_node_to_token_tree, syntax_node_to_token_tree_modified,
+    token_tree_to_syntax_node,
 };
 use test_fixture::{WORKSPACE, WithFixture};
 
@@ -321,6 +325,54 @@ fn token_tree_to_syntax(token_tree: tt::TopSubtree) -> usize {
         .sum()
 }
 
+fn setup_shared_attr_syntax_nodes() -> Vec<SyntaxNode> {
+    let source = "#[custom(foo, bar = \"baz\")]\nfn item<'a>() { let _ = a::b::<1>(); }\n";
+    (0..1024)
+        .map(|_| {
+            SourceFile::parse_with_shared_cache(source, Edition::CURRENT).syntax_node().clone()
+        })
+        .collect()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::shared_trees(setup_shared_attr_syntax_nodes())]
+fn syntax_to_token_tree_green(nodes: Vec<SyntaxNode>) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            syntax_node_to_token_tree(
+                black_box(node),
+                DummyTestSpanMap,
+                DUMMY,
+                DocCommentDesugarMode::ProcMacro,
+            )
+            .as_token_trees()
+            .len()
+        })
+        .sum()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::shared_trees(setup_shared_attr_syntax_nodes())]
+fn syntax_to_token_tree_event(nodes: Vec<SyntaxNode>) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            syntax_node_to_token_tree_modified(
+                black_box(node),
+                DummyTestSpanMap,
+                FxHashMap::default(),
+                FxHashSet::default(),
+                DUMMY,
+                DocCommentDesugarMode::ProcMacro,
+                |_, _| (true, Vec::new()),
+            )
+            .as_token_trees()
+            .len()
+        })
+        .sum()
+}
+
 library_benchmark_group!(
     name = workspace_symbol_group,
     benchmarks = [
@@ -338,7 +390,9 @@ library_benchmark_group!(
         parse_source_files,
         retain_parsed_source_files,
         retain_shared_parsed_source_files,
-        token_tree_to_syntax
+        token_tree_to_syntax,
+        syntax_to_token_tree_green,
+        syntax_to_token_tree_event
     ]
 );
 main!(library_benchmark_groups = workspace_symbol_group);

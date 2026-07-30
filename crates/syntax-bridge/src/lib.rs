@@ -12,11 +12,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use span::{Edition, Span, SpanAnchor, SpanMap, SyntaxContext};
 use stdx::{format_to, never};
 use syntax::{
-    AstToken, Parse, PreorderWithTokens, SmolStr, SyntaxElement,
+    Parse, PreorderWithTokens, SmolStr, SyntaxElement, SyntaxGreenToken, SyntaxGreenTokens,
     SyntaxKind::{self, *},
     SyntaxNode, SyntaxToken, SyntaxTreeBuilder, T, TextRange, TextSize, WalkEvent,
     ast::{self, make::tokens::doc_comment},
-    format_smolstr,
+    format_smolstr, green_tokens,
 };
 use tt::{Punct, buffer::Cursor, token_to_literal};
 
@@ -103,10 +103,7 @@ pub fn syntax_node_to_token_tree<SpanMap>(
 where
     SpanMap: SpanMapper,
 {
-    let mut c =
-        Converter::new(node, map, Default::default(), Default::default(), span, mode, |_, _| {
-            (true, Vec::new())
-        });
+    let mut c = GreenConverter::new(node, map, span, mode);
     convert_tokens(&mut c)
 }
 
@@ -423,8 +420,17 @@ fn convert_doc_comment(
     mode: DocCommentDesugarMode,
     builder: &mut tt::TopSubtreeBuilder,
 ) {
-    let Some(comment) = ast::Comment::cast(token.clone()) else { return };
-    let Some(doc) = comment.kind().doc else { return };
+    convert_doc_comment_text(token.text(), span, mode, builder);
+}
+
+fn convert_doc_comment_text(
+    text: &str,
+    span: Span,
+    mode: DocCommentDesugarMode,
+    builder: &mut tt::TopSubtreeBuilder,
+) {
+    let kind = ast::CommentKind::from_text(text);
+    let Some(doc) = kind.doc else { return };
 
     let mk_ident = |s: &str| {
         tt::Leaf::from(tt::Ident { sym: Symbol::intern(s), span, is_raw: tt::IdentIsRaw::No })
@@ -433,12 +439,12 @@ fn convert_doc_comment(
     let mk_punct =
         |c: char| tt::Leaf::from(tt::Punct { char: c, spacing: tt::Spacing::Alone, span });
 
-    let mk_doc_literal = |comment: &ast::Comment| {
-        let prefix_len = comment.prefix().len();
-        let mut text = &comment.text()[prefix_len..];
+    let mk_doc_literal = || {
+        let prefix_len = kind.prefix().len();
+        let mut text = &text[prefix_len..];
 
         // Remove ending "*/"
-        if comment.kind().shape == ast::CommentShape::Block {
+        if kind.shape == ast::CommentShape::Block {
             text = &text[0..text.len() - 2];
         }
         let (text, kind) = desugar_doc_comment_text(text, mode);
@@ -448,7 +454,7 @@ fn convert_doc_comment(
     };
 
     // Make `doc="\" Comments\""
-    let meta_tkns = [mk_ident("doc"), mk_punct('='), mk_doc_literal(&comment)];
+    let meta_tkns = [mk_ident("doc"), mk_punct('='), mk_doc_literal()];
 
     // Make `#![]`
     builder.push(mk_punct('#'));
@@ -604,6 +610,126 @@ impl TokenConverter for StaticRawConverter<'_> {
 
     fn call_site(&self) -> Span {
         self.span
+    }
+}
+
+struct GreenConverter<SpanMap> {
+    current: Option<SyntaxGreenToken>,
+    tokens: SyntaxGreenTokens,
+    punct_offset: Option<(SyntaxGreenToken, TextSize)>,
+    map: SpanMap,
+    call_site: Span,
+    mode: DocCommentDesugarMode,
+}
+
+impl<SpanMap> GreenConverter<SpanMap> {
+    fn new(node: &SyntaxNode, map: SpanMap, call_site: Span, mode: DocCommentDesugarMode) -> Self {
+        let mut tokens = green_tokens(node);
+        Self { current: tokens.next(), tokens, punct_offset: None, map, call_site, mode }
+    }
+}
+
+#[derive(Debug)]
+enum GreenSynToken {
+    Ordinary(SyntaxGreenToken),
+    Punct { token: SyntaxGreenToken, offset: usize },
+}
+
+impl<SpanMap> SrcToken<GreenConverter<SpanMap>> for GreenSynToken {
+    fn kind(&self, _ctx: &GreenConverter<SpanMap>) -> SyntaxKind {
+        match self {
+            GreenSynToken::Ordinary(token) => token.kind(),
+            GreenSynToken::Punct { token, offset } => {
+                SyntaxKind::from_char(token.text().chars().nth(*offset).unwrap()).unwrap()
+            }
+        }
+    }
+
+    fn to_char(&self, _ctx: &GreenConverter<SpanMap>) -> Option<char> {
+        match self {
+            GreenSynToken::Ordinary(_) => None,
+            GreenSynToken::Punct { token, offset } => token.text().chars().nth(*offset),
+        }
+    }
+
+    fn to_text(&self, _ctx: &GreenConverter<SpanMap>) -> SmolStr {
+        match self {
+            GreenSynToken::Ordinary(token) | GreenSynToken::Punct { token, .. } => {
+                token.text().into()
+            }
+        }
+    }
+}
+
+impl<SpanMap> TokenConverter for GreenConverter<SpanMap>
+where
+    SpanMap: SpanMapper,
+{
+    type Token = GreenSynToken;
+
+    fn convert_doc_comment(
+        &self,
+        token: &Self::Token,
+        span: Span,
+        builder: &mut tt::TopSubtreeBuilder,
+    ) {
+        let token = match token {
+            GreenSynToken::Ordinary(token) | GreenSynToken::Punct { token, .. } => token,
+        };
+        convert_doc_comment_text(token.text(), span, self.mode, builder);
+    }
+
+    fn bump(&mut self) -> Option<(Self::Token, TextRange)> {
+        if let Some((punct, offset)) = self.punct_offset.clone()
+            && usize::from(offset) + 1 < punct.text().len()
+        {
+            let offset = offset + TextSize::of('.');
+            let range = punct.text_range();
+            self.punct_offset = Some((punct.clone(), offset));
+            let range = TextRange::at(range.start() + offset, TextSize::of('.'));
+            return Some((
+                GreenSynToken::Punct { token: punct, offset: u32::from(offset) as usize },
+                range,
+            ));
+        }
+
+        let current = self.current.take()?;
+        self.current = self.tokens.next();
+        let token = if current.kind().is_punct() {
+            self.punct_offset = Some((current.clone(), 0.into()));
+            let range = current.text_range();
+            let range = TextRange::at(range.start(), TextSize::of('.'));
+            (GreenSynToken::Punct { token: current, offset: 0 }, range)
+        } else {
+            self.punct_offset = None;
+            let range = current.text_range();
+            (GreenSynToken::Ordinary(current), range)
+        };
+        Some(token)
+    }
+
+    fn peek(&self) -> Option<Self::Token> {
+        if let Some((punct, mut offset)) = self.punct_offset.clone() {
+            offset += TextSize::of('.');
+            if usize::from(offset) < punct.text().len() {
+                return Some(GreenSynToken::Punct { token: punct, offset: usize::from(offset) });
+            }
+        }
+
+        let current = self.current.clone()?;
+        if current.kind().is_punct() {
+            Some(GreenSynToken::Punct { token: current, offset: 0 })
+        } else {
+            Some(GreenSynToken::Ordinary(current))
+        }
+    }
+
+    fn span_for(&self, range: TextRange) -> Span {
+        self.map.span_for(range)
+    }
+
+    fn call_site(&self) -> Span {
+        self.call_site
     }
 }
 

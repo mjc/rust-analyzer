@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use stdx::format_to_acc;
 use test_utils::{bench, bench_fixture, project_root};
 
-use crate::{AstNode, SourceFile, SyntaxError, SyntaxKind, ast, fuzz};
+use crate::{AstNode, SourceFile, SyntaxError, SyntaxKind, ast, fuzz, green_tokens};
 
 #[test]
 fn parse_smoke_test() {
@@ -23,6 +23,28 @@ fn main() {
     let parse = SourceFile::parse(code, Edition::CURRENT);
     // eprintln!("{:#?}", parse.syntax_node());
     assert!(parse.ok().is_ok());
+}
+
+#[test]
+fn green_tokens_match_red_token_traversal() {
+    let file = SourceFile::parse(
+        "fn first() {}\nfn second() { let value = (1 + 2); }\n",
+        Edition::CURRENT,
+    )
+    .syntax_node();
+    let function = file.descendants().filter_map(ast::Fn::cast).nth(1).unwrap();
+
+    let expected: Vec<_> = function
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .map(|token| (token.kind(), token.text().to_owned(), token.text_range()))
+        .collect();
+    let actual: Vec<_> = green_tokens(function.syntax())
+        .map(|token| (token.kind(), token.text().to_owned(), token.text_range()))
+        .collect();
+
+    assert_eq!(actual, expected);
 }
 
 #[test]

@@ -51,8 +51,9 @@ pub use crate::{
     ptr::{AstPtr, SyntaxNodePtr},
     syntax_error::SyntaxError,
     syntax_node::{
-        PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxElementChildren, SyntaxNode,
-        SyntaxNodeChildren, SyntaxToken, SyntaxTreeBuilder,
+        PreorderWithTokens, RustLanguage, SyntaxElement, SyntaxElementChildren, SyntaxGreenToken,
+        SyntaxGreenTokens, SyntaxNode, SyntaxNodeChildren, SyntaxToken, SyntaxTreeBuilder,
+        green_tokens,
     },
     token_text::TokenText,
 };

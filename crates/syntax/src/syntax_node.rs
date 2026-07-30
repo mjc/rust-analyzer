@@ -9,8 +9,9 @@
 use std::sync::OnceLock;
 
 use rowan::{GreenNodeBuilder, Language, SharedNodeCache};
+use smallvec::SmallVec;
 
-use crate::{Edition, Parse, SyntaxError, SyntaxKind, TextSize};
+use crate::{Edition, Parse, SyntaxError, SyntaxKind, TextRange, TextSize};
 
 pub(crate) use rowan::{GreenNode, GreenToken, NodeOrToken};
 
@@ -35,6 +36,73 @@ pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<RustLanguage>;
 pub(crate) type SyntaxNodeChildrenByKind = rowan::SyntaxNodeChildrenByKind<RustLanguage>;
 pub type SyntaxElementChildren = rowan::SyntaxElementChildren<RustLanguage>;
 pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
+
+#[derive(Clone, Debug)]
+pub struct SyntaxGreenToken {
+    green: GreenToken,
+    range: TextRange,
+}
+
+impl SyntaxGreenToken {
+    pub fn kind(&self) -> SyntaxKind {
+        SyntaxKind::from(self.green.kind().0)
+    }
+
+    pub fn text(&self) -> &str {
+        self.green.text()
+    }
+
+    pub fn text_range(&self) -> TextRange {
+        self.range
+    }
+}
+
+#[derive(Debug)]
+pub struct SyntaxGreenTokens {
+    stack: SmallVec<[(NodeOrToken<GreenNode, GreenToken>, TextSize); 16]>,
+}
+
+impl SyntaxGreenTokens {
+    fn new(node: &SyntaxNode) -> Self {
+        let green = GreenNode::from(node.green());
+        let mut stack = SmallVec::new();
+        stack.push((NodeOrToken::Node(green), node.text_range().start()));
+        Self { stack }
+    }
+}
+
+impl Iterator for SyntaxGreenTokens {
+    type Item = SyntaxGreenToken;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (element, offset) = self.stack.pop()?;
+            match element {
+                NodeOrToken::Node(node) => {
+                    let mut child_offset = offset + node.text_len();
+                    for child in node.children().rev() {
+                        child_offset -= child.text_len();
+                        let child = match child {
+                            NodeOrToken::Node(node) => NodeOrToken::Node(node.to_owned()),
+                            NodeOrToken::Token(token) => NodeOrToken::Token(token.to_owned()),
+                        };
+                        self.stack.push((child, child_offset));
+                    }
+                }
+                NodeOrToken::Token(green) => {
+                    return Some(SyntaxGreenToken {
+                        range: TextRange::at(offset, green.text_len()),
+                        green,
+                    });
+                }
+            }
+        }
+    }
+}
+
+pub fn green_tokens(node: &SyntaxNode) -> SyntaxGreenTokens {
+    SyntaxGreenTokens::new(node)
+}
 
 static STATIC_TOKENS: [OnceLock<GreenToken>; SyntaxKind::__LAST as usize] =
     [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
