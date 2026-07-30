@@ -4,11 +4,16 @@ use std::cell::OnceCell;
 
 use base_db::{Crate, FxIndexSet, SourceDatabase};
 use cfg::CfgOptions;
-use hir_expand::{HirFileId, mod_path::PathKind, name::AsName, span_map::SpanMap};
+use hir_expand::{
+    HirFileId,
+    mod_path::PathKind,
+    name::{AsName, Name},
+    span_map::SpanMap,
+};
 use la_arena::Arena;
 use span::{AstIdMap, FileAstId, SyntaxContext};
 use syntax::{
-    AstNode,
+    AstNode, NodeOrToken, SyntaxKind, SyntaxNode,
     ast::{self, HasModuleItem, HasName},
 };
 
@@ -158,7 +163,7 @@ impl<'db> Ctx<'db> {
 
     fn lower_struct(&mut self, strukt: &ast::Struct) -> Option<ItemTreeAstId<Struct>> {
         let visibility = self.lower_visibility(strukt);
-        let name = strukt.name()?.as_name();
+        let name = direct_name(strukt.syntax())?;
         let ast_id = self.source_ast_id_map.ast_id(strukt);
         let shape = adt_shape(strukt.kind());
         let res = Struct { name, visibility, shape };
@@ -169,7 +174,7 @@ impl<'db> Ctx<'db> {
 
     fn lower_union(&mut self, union: &ast::Union) -> Option<ItemTreeAstId<Union>> {
         let visibility = self.lower_visibility(union);
-        let name = union.name()?.as_name();
+        let name = direct_name(union.syntax())?;
         let ast_id = self.source_ast_id_map.ast_id(union);
         let res = Union { name, visibility };
         self.tree.small_data.insert(ast_id.upcast(), SmallModItem::Union(res));
@@ -178,7 +183,7 @@ impl<'db> Ctx<'db> {
 
     fn lower_enum(&mut self, enum_: &ast::Enum) -> Option<ItemTreeAstId<Enum>> {
         let visibility = self.lower_visibility(enum_);
-        let name = enum_.name()?.as_name();
+        let name = direct_name(enum_.syntax())?;
         let ast_id = self.source_ast_id_map.ast_id(enum_);
         let res = Enum { name, visibility };
         self.tree.small_data.insert(ast_id.upcast(), SmallModItem::Enum(res));
@@ -187,7 +192,7 @@ impl<'db> Ctx<'db> {
 
     fn lower_function(&mut self, func: &ast::Fn) -> Option<ItemTreeAstId<Function>> {
         let visibility = self.lower_visibility(func);
-        let name = func.name()?.as_name();
+        let name = direct_name(func.syntax())?;
 
         let ast_id = self.source_ast_id_map.ast_id(func);
 
@@ -201,7 +206,7 @@ impl<'db> Ctx<'db> {
         &mut self,
         type_alias: &ast::TypeAlias,
     ) -> Option<ItemTreeAstId<TypeAlias>> {
-        let name = type_alias.name()?.as_name();
+        let name = direct_name(type_alias.syntax())?;
         let visibility = self.lower_visibility(type_alias);
         let ast_id = self.source_ast_id_map.ast_id(type_alias);
         let res = TypeAlias { name, visibility };
@@ -210,7 +215,7 @@ impl<'db> Ctx<'db> {
     }
 
     fn lower_static(&mut self, static_: &ast::Static) -> Option<ItemTreeAstId<Static>> {
-        let name = static_.name()?.as_name();
+        let name = direct_name(static_.syntax())?;
         let visibility = self.lower_visibility(static_);
         let ast_id = self.source_ast_id_map.ast_id(static_);
         let res = Static { name, visibility };
@@ -219,7 +224,7 @@ impl<'db> Ctx<'db> {
     }
 
     fn lower_const(&mut self, konst: &ast::Const) -> ItemTreeAstId<Const> {
-        let name = konst.name().map(|it| it.as_name());
+        let name = direct_name(konst.syntax());
         let visibility = self.lower_visibility(konst);
         let ast_id = self.source_ast_id_map.ast_id(konst);
         let res = Const { name, visibility };
@@ -228,7 +233,7 @@ impl<'db> Ctx<'db> {
     }
 
     fn lower_module(&mut self, module: &ast::Module) -> Option<ItemTreeAstId<Mod>> {
-        let name = module.name()?.as_name();
+        let name = direct_name(module.syntax())?;
         let visibility = self.lower_visibility(module);
         let kind = if module.semicolon_token().is_some() {
             ModKind::Outline
@@ -252,7 +257,7 @@ impl<'db> Ctx<'db> {
     }
 
     fn lower_trait(&mut self, trait_def: &ast::Trait) -> Option<ItemTreeAstId<Trait>> {
-        let name = trait_def.name()?.as_name();
+        let name = direct_name(trait_def.syntax())?;
         let visibility = self.lower_visibility(trait_def);
         let ast_id = self.source_ast_id_map.ast_id(trait_def);
 
@@ -313,21 +318,21 @@ impl<'db> Ctx<'db> {
     }
 
     fn lower_macro_rules(&mut self, m: &ast::MacroRules) -> Option<ItemTreeAstId<MacroRules>> {
-        let name = m.name()?;
+        let name = direct_name(m.syntax())?;
         let ast_id = self.source_ast_id_map.ast_id(m);
 
-        let res = MacroRules { name: name.as_name() };
+        let res = MacroRules { name };
         self.tree.small_data.insert(ast_id.upcast(), SmallModItem::MacroRules(res));
         Some(ast_id)
     }
 
     fn lower_macro_def(&mut self, m: &ast::MacroDef) -> Option<ItemTreeAstId<Macro2>> {
-        let name = m.name()?;
+        let name = direct_name(m.syntax())?;
 
         let ast_id = self.source_ast_id_map.ast_id(m);
         let visibility = self.lower_visibility(m);
 
-        let res = Macro2 { name: name.as_name(), visibility };
+        let res = Macro2 { name, visibility };
         self.tree.small_data.insert(ast_id.upcast(), SmallModItem::Macro2(res));
         Some(ast_id)
     }
@@ -446,6 +451,16 @@ impl UseTreeLowering<'_> {
             }
         }
     }
+}
+
+fn direct_name(node: &SyntaxNode) -> Option<Name> {
+    let green = node.green();
+    let name = green
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::NAME)?;
+    let text = name.children().next().and_then(NodeOrToken::into_token)?.text();
+    Some(Name::new_root(text))
 }
 
 pub(crate) fn lower_use_tree(

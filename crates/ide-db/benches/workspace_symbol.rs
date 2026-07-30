@@ -44,6 +44,14 @@ fn setup_workspace() -> (RootDatabase, Query) {
     workspace(&setup_workspace_fixture())
 }
 
+fn setup_named_item_tree_fixture() -> String {
+    let mut fixture = String::from("//- /lib.rs crate:main\n");
+    for item in 0..4096 {
+        fixture.push_str(&format!("pub const ITEM_{item}: () = ();\n"));
+    }
+    fixture
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::workspace(setup_workspace())]
 fn workspace_symbol((db, query): (RootDatabase, Query)) -> usize {
@@ -62,6 +70,17 @@ fn build_workspace_symbol(fixture: String) -> usize {
     assert_eq!(declarations, 32 * 257);
     assert_eq!(scope_items, 32 * 257);
     black_box(modules.len() + declarations + scope_items + world_symbols(&db, query).len())
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::named_consts(setup_named_item_tree_fixture())]
+fn build_named_item_tree(fixture: String) -> usize {
+    let (db, _) = RootDatabase::with_many_files(black_box(&fixture));
+    let declarations = Crate::all(&db)
+        .into_iter()
+        .flat_map(|krate| krate.modules(&db))
+        .flat_map(|module| module.declarations(&db));
+    black_box(declarations.count())
 }
 
 fn setup_ast_id_map() -> SyntaxNode {
@@ -237,6 +256,7 @@ library_benchmark_group!(
     benchmarks = [
         workspace_symbol,
         build_workspace_symbol,
+        build_named_item_tree,
         ast_id_map,
         tiny_ast_id_maps,
         nested_ast_id_map,
