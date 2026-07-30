@@ -504,6 +504,9 @@ impl<'db> SymbolIndex<'db> {
         symbols.par_sort_by(cmp);
 
         let mut builder = fst::MapBuilder::memory();
+        let mut key = String::with_capacity(
+            symbols.iter().map(|symbol| symbol.name.as_str().len()).max().unwrap_or(0),
+        );
 
         let mut last_batch_start = 0;
 
@@ -518,10 +521,12 @@ impl<'db> SymbolIndex<'db> {
             let end = idx + 1;
             last_batch_start = end;
 
-            let key = symbols[start].name.as_str().to_ascii_lowercase();
+            key.clear();
+            key.push_str(symbols[start].name.as_str());
+            key.make_ascii_lowercase();
             let value = SymbolIndex::range_to_map_value(start, end);
 
-            builder.insert(key, value).unwrap();
+            builder.insert(key.as_str(), value).unwrap();
         }
 
         let map = builder
