@@ -2,7 +2,7 @@
 
 use base_db::SourceDatabase;
 use span::Span;
-use syntax::{AstNode, TextRange, ast};
+use syntax::{AstNode, SyntaxKind, SyntaxNodePtr, TextRange, TextSize, ast};
 
 pub use span::RealSpanMap;
 
@@ -74,15 +74,36 @@ pub(crate) fn real_span_map(
     // this kind of joining makes them as stable as the AstIdMap (which is basically changing on
     // every input of the file)…
 
-    let item_to_entry =
-        |item: ast::Item| (item.syntax().text_range().start(), ast_id_map.ast_id(&item).erase());
+    let ptr_to_entry =
+        |ptr: SyntaxNodePtr| (ptr.text_range().start(), ast_id_map.erased_ast_id_for_ptr(ptr));
+    let item_to_entry = |item: ast::Item| ptr_to_entry(SyntaxNodePtr::new(item.syntax()));
     let mut nested_pairs = Vec::new();
     // Unfortunately, assoc items are very common in Rust, so descend into those as well and make
     // them anchors too, but only if they have no attributes attached, as those might be proc-macros
     // and using different anchors inside of them will prevent spans from being joinable.
-    for item in tree.items() {
+    let green = tree.syntax().green();
+    let mut offset = TextSize::new(0);
+    for child in green.children() {
+        let range = TextRange::at(offset, child.text_len());
+        offset += child.text_len();
+        let Some(child) = child.as_node() else { continue };
+        let kind = SyntaxKind::from(child.kind().0);
+        if !ast::Item::can_cast(kind) {
+            continue;
+        }
         // Top level items make for great anchors as they are the most stable and a decent boundary.
-        pairs.push(item_to_entry(item.clone()));
+        let ptr = SyntaxNodePtr::from_kind_and_range(kind, range);
+        pairs.push(ptr_to_entry(ptr));
+        if !matches!(
+            kind,
+            SyntaxKind::EXTERN_BLOCK | SyntaxKind::IMPL | SyntaxKind::MODULE | SyntaxKind::TRAIT
+        ) {
+            continue;
+        }
+        let Some(item) = ptr.try_to_node(tree.syntax()).and_then(ast::Item::cast) else {
+            stdx::never!("top-level item pointer did not resolve");
+            continue;
+        };
         match &item {
             ast::Item::ExternBlock(it) if ast::attrs_including_inner(it).next().is_none() => {
                 if let Some(extern_item_list) = it.extern_item_list() {
