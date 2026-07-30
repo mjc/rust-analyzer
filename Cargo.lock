@@ -966,6 +966,7 @@ dependencies = [
  "cov-mark",
  "either",
  "expect-test",
+ "gungraun",
  "intern",
  "itertools 0.15.0",
  "mbe",

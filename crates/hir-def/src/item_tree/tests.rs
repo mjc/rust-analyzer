@@ -260,6 +260,24 @@ fn crate_attrs_should_preserve_order() {
 }
 
 #[test]
+fn filters_only_single_segment_builtin_attrs() {
+    check(
+        r#"
+#[allow(dead_code)]
+#[tool::allow(dead_code)]
+#[custom]
+fn item() {}
+        "#,
+        expect![[r#"
+            #[tool::allow(dead_code)]
+            #[custom]
+            // AstId: Fn[5AE2, 0]
+            pub(self) fn item;
+        "#]],
+    );
+}
+
+#[test]
 fn crate_attrs_with_disabled_cfg_injected() {
     check(
         r#"

@@ -25,7 +25,7 @@ use itertools::Itertools;
 use mbe::{DelimiterKind, Punct};
 use smallvec::SmallVec;
 use span::{RealSpanMap, Span, SyntaxContext};
-use syntax::{AstNode, SmolStr, ast, unescape};
+use syntax::{AstNode, NodeOrToken, SmolStr, SyntaxKind, ast, unescape};
 use syntax_bridge::DocCommentDesugarMode;
 
 use crate::{
@@ -174,6 +174,44 @@ pub(crate) fn is_item_tree_filtered_attr(name: &str) -> bool {
     )
 }
 
+fn is_item_tree_filtered_meta(meta: &ast::Meta) -> bool {
+    let green = meta.syntax().green();
+    let Some(path) = green
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::PATH)
+    else {
+        return false;
+    };
+    if path
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .any(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::PATH)
+    {
+        return false;
+    }
+    let Some(segment) = path
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::PATH_SEGMENT)
+    else {
+        return false;
+    };
+    let Some(name_ref) = segment
+        .children()
+        .filter_map(NodeOrToken::into_node)
+        .find(|child| SyntaxKind::from(child.kind().0) == SyntaxKind::NAME_REF)
+    else {
+        return false;
+    };
+    let Some(text) =
+        name_ref.children().next().and_then(NodeOrToken::into_token).map(|it| it.text())
+    else {
+        return false;
+    };
+    is_item_tree_filtered_attr(text)
+}
+
 /// This collects attributes exactly as the item tree needs them. This is used for the item tree,
 /// as well as for resolving [`AttrId`]s.
 pub fn collect_item_tree_attrs<'a, BreakValue>(
@@ -200,10 +238,7 @@ pub fn collect_item_tree_attrs<'a, BreakValue>(
                     }
                     true
                 }
-                _ => attr
-                    .path()
-                    .and_then(|path| path.as_one_segment())
-                    .is_some_and(|segment| is_item_tree_filtered_attr(&segment)),
+                _ => is_item_tree_filtered_meta(&attr),
             };
             if !filter && let ControlFlow::Break(v) = on_attr(attr, top_attr) {
                 return ControlFlow::Break(Either::Left(v));

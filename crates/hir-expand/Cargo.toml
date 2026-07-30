@@ -37,6 +37,11 @@ syntax-bridge.workspace = true
 
 [dev-dependencies]
 expect-test = "1.5.1"
+gungraun = "0.19.4"
+
+[[bench]]
+name = "attrs"
+harness = false
 
 [features]
 in-rust-tree = ["syntax/in-rust-tree"]
