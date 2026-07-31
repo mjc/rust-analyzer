@@ -44,12 +44,9 @@ pub(crate) fn gather_pgo_profile<'a>(
 
     // Run RA either on itself or on a downloaded crate
     eprintln!("Training RA on {label}...");
-    cmd!(
-        sh,
-        "target/{target}/release/rust-analyzer analysis-stats -q --run-all-ide-things {train_path}"
-    )
-    .run()
-    .context("cannot generate PGO profiles")?;
+    cmd!(sh, "target/{target}/release/rust-analyzer analysis-stats -q {train_path}")
+        .run()
+        .context("cannot generate PGO profiles")?;
 
     // Merge profiles into a single file
     let merged_profile = pgo_dir.join("merged.profdata");
