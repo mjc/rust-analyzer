@@ -62,7 +62,7 @@ fn setup_file_text_fixture() -> String {
     let mut fixture = String::new();
     for file in 0..128 {
         if file == 0 {
-            writeln!(fixture, "//- /lib.rs crate:main").unwrap();
+            writeln!(fixture, "//- /lib.rs crate:main new_source_root:library").unwrap();
         } else {
             writeln!(fixture, "//- /file_{file}.rs").unwrap();
         }

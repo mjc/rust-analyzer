@@ -274,6 +274,28 @@ pub fn line_index(db: &dyn SourceDatabase, file_id: FileId) -> &Arc<LineIndex> {
     line_index(db, InternedFileId::new(db, file_id))
 }
 
+#[cfg(test)]
+mod tests {
+    use salsa::Durability;
+    use vfs::FileId;
+
+    use crate::{RootDatabase, SourceDatabase};
+
+    #[test]
+    fn compressed_file_text_is_exact_and_invalidated() {
+        let mut db = RootDatabase::default();
+        let file_id = FileId::from_raw(0);
+        let original = "pub fn original() {}\n".repeat(1024);
+        let changed = "pub fn changed() { let value = \"λ\\0\"; }\n".repeat(1024);
+
+        db.set_file_text_with_durability(file_id, &original, Durability::HIGH);
+        assert_eq!(&**db.file_text(file_id).text(&db), original);
+
+        db.set_file_text_with_durability(file_id, &changed, Durability::HIGH);
+        assert_eq!(&**db.file_text(file_id).text(&db), changed);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SymbolKind {
     Attribute,

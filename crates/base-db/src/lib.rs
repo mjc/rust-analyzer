@@ -119,12 +119,13 @@ impl Files {
     }
 
     pub fn set_file_text(&self, db: &mut dyn SourceDatabase, file_id: vfs::FileId, text: &str) {
+        let text = FileTextStorage::new(text, Durability::LOW);
         match self.files.entry(file_id) {
             Entry::Occupied(mut occupied) => {
-                occupied.get_mut().set_text(db).to(Arc::from(text));
+                occupied.get_mut().set_storage(db).to(text);
             }
             Entry::Vacant(vacant) => {
-                let text = FileText::new(db, Arc::from(text), file_id);
+                let text = FileText::new(db, text, file_id);
                 vacant.insert(text);
             }
         };
@@ -137,13 +138,13 @@ impl Files {
         text: &str,
         durability: Durability,
     ) {
+        let text = FileTextStorage::new(text, durability);
         match self.files.entry(file_id) {
             Entry::Occupied(mut occupied) => {
-                occupied.get_mut().set_text(db).with_durability(durability).to(Arc::from(text));
+                occupied.get_mut().set_storage(db).with_durability(durability).to(text);
             }
             Entry::Vacant(vacant) => {
-                let text =
-                    FileText::builder(Arc::from(text), file_id).durability(durability).new(db);
+                let text = FileText::builder(text, file_id).durability(durability).new(db);
                 vacant.insert(text);
             }
         };
@@ -249,8 +250,53 @@ pub struct LocalRoots {
 #[salsa::input(debug)]
 pub struct FileText {
     #[returns(ref)]
-    pub text: Arc<str>,
+    storage: FileTextStorage,
     pub file_id: vfs::FileId,
+}
+
+#[salsa::tracked]
+impl FileText {
+    #[salsa::tracked(lru = 128, returns(ref))]
+    pub fn text(self, db: &dyn SourceDatabase) -> Arc<str> {
+        self.storage(db).text()
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileTextStorage(FileTextStorageKind);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FileTextStorageKind {
+    Plain(Arc<str>),
+    Compressed(Arc<[u8]>),
+}
+
+impl FileTextStorage {
+    fn new(text: &str, durability: Durability) -> FileTextStorage {
+        if durability != Durability::HIGH {
+            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
+        }
+
+        let compressed = lz4_flex::compress_prepend_size(text.as_bytes());
+        if text.len() <= compressed.len() {
+            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
+        }
+        FileTextStorage(FileTextStorageKind::Compressed(Arc::from(compressed)))
+    }
+
+    fn text(&self) -> Arc<str> {
+        match &self.0 {
+            FileTextStorageKind::Plain(text) => Arc::clone(text),
+            FileTextStorageKind::Compressed(bytes) => {
+                let bytes = lz4_flex::decompress_size_prepended(bytes)
+                    .expect("internally compressed file text must be valid");
+                let text = String::from_utf8(bytes)
+                    .expect("internally compressed file text must be UTF-8");
+                Arc::from(text.as_str())
+            }
+        }
+    }
 }
 
 #[salsa::input(debug)]
