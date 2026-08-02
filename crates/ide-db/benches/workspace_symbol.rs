@@ -10,9 +10,10 @@ use ide_db::{
     symbol_index::{Query, SymbolIndex, world_symbols},
 };
 use rayon::ThreadPoolBuilder;
+use rowan::SyntaxKind;
 use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::Setter;
-use syntax::{Edition, SourceFile, SyntaxNode, TextSize};
+use syntax::{Edition, GreenNode, SourceFile, SyntaxNode, TextSize};
 use syntax_bridge::{
     DocCommentDesugarMode,
     dummy_test_span_utils::{DUMMY, DummyTestSpanMap},
@@ -265,6 +266,18 @@ fn setup_tiny_sources() -> Vec<String> {
     (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
 }
 
+fn setup_green_nodes_for_drop() -> Vec<GreenNode> {
+    (0..16_384).map(|_| GreenNode::new(SyntaxKind(0), [])).collect()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::owned_nodes(setup_green_nodes_for_drop())]
+fn drop_green_nodes(nodes: Vec<GreenNode>) -> usize {
+    let len = nodes.len();
+    drop(black_box(nodes));
+    black_box(len)
+}
+
 fn setup_indented_sources() -> Vec<String> {
     (0..1024)
         .map(|index| {
@@ -474,6 +487,7 @@ library_benchmark_group!(
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
+        drop_green_nodes,
         parse_source_files,
         retain_parsed_source_files,
         retain_shared_parsed_source_files,

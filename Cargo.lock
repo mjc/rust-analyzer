@@ -1214,6 +1214,7 @@ dependencies = [
  "parser",
  "profile",
  "rayon",
+ "rowan",
  "rustc-hash 2.1.2",
  "salsa",
  "smallvec",
