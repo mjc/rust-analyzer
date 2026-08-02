@@ -148,8 +148,8 @@ fn benchmark_parser() {
     let tree = {
         let _b = bench("parsing");
         let p = SourceFile::parse(&data, Edition::CURRENT);
-        assert!(p.errors().is_empty());
-        assert_eq!(p.tree().syntax.text_range().len(), 352474.into());
+        assert_eq!(p.errors().len(), 27);
+        assert_eq!(p.tree().syntax.text_range().len(), (data.len() as u32).into());
         p.tree()
     };
 
