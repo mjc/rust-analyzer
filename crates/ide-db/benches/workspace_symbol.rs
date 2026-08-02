@@ -320,6 +320,10 @@ fn setup_wide_green_node() -> GreenNode {
     GreenNode::new(SyntaxKind(u16::MAX), [])
 }
 
+fn setup_green_child_for_promotion() -> GreenToken {
+    GreenToken::new(SyntaxKind(0), &"x".repeat(1 << 14))
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::owned_nodes(setup_green_nodes_for_drop())]
 fn drop_green_nodes(nodes: Vec<GreenNode>) -> usize {
@@ -345,6 +349,13 @@ fn clone_drop_green_refs(pair: (GreenNode, GreenToken)) -> usize {
             })
             .sum(),
     )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::long_text(setup_green_child_for_promotion())]
+fn promote_green_node_to_wide(token: GreenToken) -> usize {
+    let node = GreenNode::new(SyntaxKind(0), [token.into()]);
+    black_box(u32::from(node.text_len()) as usize)
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
@@ -588,6 +599,7 @@ library_benchmark_group!(
         mutable_cursor_detach_attach,
         drop_green_nodes,
         clone_drop_green_refs,
+        promote_green_node_to_wide,
         wide_green_token_access,
         wide_green_node_data_access,
         parse_source_files,
