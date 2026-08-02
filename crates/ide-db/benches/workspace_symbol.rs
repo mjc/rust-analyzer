@@ -229,6 +229,10 @@ fn setup_nested_ast_id_map() -> SyntaxNode {
     SourceFile::parse(&source, Edition::CURRENT).syntax_node().clone()
 }
 
+fn setup_mutable_cursor() -> SyntaxNode {
+    setup_nested_ast_id_map().clone_for_update()
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::nested_modules(setup_nested_ast_id_map())]
 fn nested_ast_id_map(source: SyntaxNode) -> usize {
@@ -258,6 +262,37 @@ fn syntax_token_at_offset(source: SyntaxNode) -> usize {
             .step_by(16)
             .filter_map(|offset| source.token_at_offset(TextSize::from(offset)).left_biased())
             .map(|token| u32::from(token.text_range().start()) as usize)
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::existing_child(setup_mutable_cursor())]
+fn mutable_cursor_child_reuse(source: SyntaxNode) -> usize {
+    let retained = source.first_child().unwrap();
+    let result = black_box(
+        (0..4096)
+            .map(|_| {
+                let child = black_box(source.first_child().unwrap());
+                u32::from(black_box(child.text_range()).len()) as usize
+            })
+            .sum(),
+    );
+    black_box(retained);
+    result
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::first_child(setup_mutable_cursor())]
+fn mutable_cursor_detach_attach(source: SyntaxNode) -> usize {
+    let child = source.first_child().unwrap();
+    black_box(
+        (0..256)
+            .map(|_| {
+                child.detach();
+                source.splice_children(0..0, vec![child.clone().into()]);
+                u32::from(black_box(source.text_range()).len()) as usize
+            })
             .sum(),
     )
 }
@@ -549,6 +584,8 @@ library_benchmark_group!(
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
+        mutable_cursor_child_reuse,
+        mutable_cursor_detach_attach,
         drop_green_nodes,
         clone_drop_green_refs,
         wide_green_token_access,
