@@ -270,6 +270,13 @@ fn setup_green_nodes_for_drop() -> Vec<GreenNode> {
     (0..16_384).map(|_| GreenNode::new(SyntaxKind(0), [])).collect()
 }
 
+fn setup_green_refcount_pair() -> (GreenNode, GreenToken) {
+    let kind = SyntaxKind(0);
+    let token = GreenToken::new(kind, "token");
+    let node = GreenNode::new(kind, [token.clone().into()]);
+    (node, token)
+}
+
 fn setup_wide_green_token() -> GreenToken {
     GreenToken::new(SyntaxKind(0), &"x".repeat(70_000))
 }
@@ -284,6 +291,25 @@ fn drop_green_nodes(nodes: Vec<GreenNode>) -> usize {
     let len = nodes.len();
     drop(black_box(nodes));
     black_box(len)
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::node_and_token(setup_green_refcount_pair())]
+fn clone_drop_green_refs(pair: (GreenNode, GreenToken)) -> usize {
+    let (node, token) = pair;
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let node = black_box(node.clone());
+                let token = black_box(token.clone());
+                let len =
+                    u32::from(black_box(node.text_len())) + u32::from(black_box(token.text_len()));
+                drop(node);
+                drop(token);
+                len as usize
+            })
+            .sum(),
+    )
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
@@ -524,6 +550,7 @@ library_benchmark_group!(
         syntax_cursor_traversal,
         syntax_token_at_offset,
         drop_green_nodes,
+        clone_drop_green_refs,
         wide_green_token_access,
         wide_green_node_data_access,
         parse_source_files,
