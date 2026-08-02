@@ -305,6 +305,11 @@ fn setup_green_nodes_for_drop() -> Vec<GreenNode> {
     (0..16_384).map(|_| GreenNode::new(SyntaxKind(0), [])).collect()
 }
 
+fn setup_green_nodes_with_leaf_children() -> Vec<GreenNode> {
+    let kind = SyntaxKind(0);
+    (0..16_384).map(|_| GreenNode::new(kind, [GreenToken::new(kind, "token").into()])).collect()
+}
+
 fn setup_green_refcount_pair() -> (GreenNode, GreenToken) {
     let kind = SyntaxKind(0);
     let token = GreenToken::new(kind, "token");
@@ -326,6 +331,7 @@ fn setup_green_child_for_promotion() -> GreenToken {
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::owned_nodes(setup_green_nodes_for_drop())]
+#[bench::leaf_children(setup_green_nodes_with_leaf_children())]
 fn drop_green_nodes(nodes: Vec<GreenNode>) -> usize {
     let len = nodes.len();
     drop(black_box(nodes));
