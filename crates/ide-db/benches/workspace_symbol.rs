@@ -10,7 +10,7 @@ use ide_db::{
     symbol_index::{Query, SymbolIndex, world_symbols},
 };
 use rayon::ThreadPoolBuilder;
-use rowan::SyntaxKind;
+use rowan::{GreenToken, SyntaxKind};
 use rustc_hash::{FxHashMap, FxHashSet};
 use salsa::Setter;
 use syntax::{Edition, GreenNode, SourceFile, SyntaxNode, TextSize};
@@ -270,12 +270,29 @@ fn setup_green_nodes_for_drop() -> Vec<GreenNode> {
     (0..16_384).map(|_| GreenNode::new(SyntaxKind(0), [])).collect()
 }
 
+fn setup_wide_green_token() -> GreenToken {
+    GreenToken::new(SyntaxKind(0), &"x".repeat(70_000))
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::owned_nodes(setup_green_nodes_for_drop())]
 fn drop_green_nodes(nodes: Vec<GreenNode>) -> usize {
     let len = nodes.len();
     drop(black_box(nodes));
     black_box(len)
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::wide_text(setup_wide_green_token())]
+fn wide_green_token_access(token: GreenToken) -> usize {
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let token = black_box(&token);
+                black_box(token.text()).len() + u32::from(black_box(token.text_len())) as usize
+            })
+            .sum(),
+    )
 }
 
 fn setup_indented_sources() -> Vec<String> {
@@ -488,6 +505,7 @@ library_benchmark_group!(
         syntax_cursor_traversal,
         syntax_token_at_offset,
         drop_green_nodes,
+        wide_green_token_access,
         parse_source_files,
         retain_parsed_source_files,
         retain_shared_parsed_source_files,
