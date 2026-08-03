@@ -297,6 +297,21 @@ fn mutable_cursor_detach_attach(source: SyntaxNode) -> usize {
     )
 }
 
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::second_child(setup_mutable_cursor())]
+fn mutable_cursor_detach_attach_nonzero(source: SyntaxNode) -> usize {
+    let child = source.children().nth(1).unwrap();
+    black_box(
+        (0..256)
+            .map(|_| {
+                child.detach();
+                source.splice_children(1..1, vec![child.clone().into()]);
+                u32::from(black_box(source.text_range()).len()) as usize
+            })
+            .sum(),
+    )
+}
+
 fn setup_tiny_sources() -> Vec<String> {
     (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
 }
@@ -628,6 +643,7 @@ library_benchmark_group!(
         syntax_token_at_offset,
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
+        mutable_cursor_detach_attach_nonzero,
         drop_green_nodes,
         construct_green_tokens,
         clone_drop_green_refs,
