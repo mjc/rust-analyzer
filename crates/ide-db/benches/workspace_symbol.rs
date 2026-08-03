@@ -10,7 +10,7 @@ use ide_db::{
     symbol_index::{Query, SymbolIndex, world_symbols},
 };
 use rayon::ThreadPoolBuilder;
-use rowan::{GreenNodeData, GreenToken, SyntaxKind};
+use rowan::{GreenNodeData, GreenToken, GreenTokenData, SyntaxKind};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use salsa::Setter;
 use syntax::{Edition, GreenNode, SourceFile, SyntaxNode, TextSize};
@@ -432,7 +432,7 @@ fn wide_green_token_access(token: GreenToken) -> usize {
     black_box(
         (0..4096)
             .map(|_| {
-                let token = black_box(&token);
+                let token: &GreenTokenData = black_box(&token);
                 black_box(token.text()).len() + u32::from(black_box(token.text_len())) as usize
             })
             .sum(),
