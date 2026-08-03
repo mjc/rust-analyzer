@@ -372,6 +372,10 @@ fn setup_wide_green_token() -> GreenToken {
     GreenToken::new(SyntaxKind(0), &"x".repeat(70_000))
 }
 
+fn setup_short_green_token() -> GreenToken {
+    GreenToken::new(SyntaxKind(0), "token")
+}
+
 fn setup_wide_green_node() -> GreenNode {
     GreenNode::new(SyntaxKind(u16::MAX), [])
 }
@@ -427,8 +431,9 @@ fn promote_green_node_to_wide(token: GreenToken) -> usize {
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::short_text(setup_short_green_token())]
 #[bench::wide_text(setup_wide_green_token())]
-fn wide_green_token_access(token: GreenToken) -> usize {
+fn green_token_data_access(token: GreenToken) -> usize {
     black_box(
         (0..4096)
             .map(|_| {
@@ -671,7 +676,7 @@ library_benchmark_group!(
         construct_green_tokens,
         clone_drop_green_refs,
         promote_green_node_to_wide,
-        wide_green_token_access,
+        green_token_data_access,
         wide_green_node_data_access,
         parse_source_files,
         retain_parsed_source_files,
