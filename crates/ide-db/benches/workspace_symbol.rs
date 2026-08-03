@@ -316,6 +316,14 @@ fn setup_wide_green_nodes_with_leaf_children() -> Vec<GreenNode> {
     (0..1024).map(|_| GreenNode::new(kind, (0..256).map(|_| token.clone().into()))).collect()
 }
 
+fn setup_short_green_token_construction() -> (String, usize) {
+    ("token".to_owned(), 16_384)
+}
+
+fn setup_wide_green_token_construction() -> (String, usize) {
+    ("x".repeat(70_000), 32)
+}
+
 fn setup_green_refcount_pair() -> (GreenNode, GreenToken) {
     let kind = SyntaxKind(0);
     let token = GreenToken::new(kind, "token");
@@ -343,6 +351,16 @@ fn drop_green_nodes(nodes: Vec<GreenNode>) -> usize {
     let len = nodes.len();
     drop(black_box(nodes));
     black_box(len)
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::short_text(setup_short_green_token_construction())]
+#[bench::wide_text(setup_wide_green_token_construction())]
+fn construct_green_tokens((text, count): (String, usize)) -> usize {
+    let tokens = (0..count)
+        .map(|index| GreenToken::new(SyntaxKind(index as u16), &text))
+        .collect::<Vec<_>>();
+    black_box(tokens.iter().map(|token| token.text().len()).sum())
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
@@ -611,6 +629,7 @@ library_benchmark_group!(
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
         drop_green_nodes,
+        construct_green_tokens,
         clone_drop_green_refs,
         promote_green_node_to_wide,
         wide_green_token_access,
