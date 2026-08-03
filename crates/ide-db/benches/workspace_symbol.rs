@@ -1,6 +1,6 @@
 //! Instruction and allocation benchmarks for retained syntax and workspace symbol indexing.
 
-use std::{fmt::Write, hint::black_box, sync::Once};
+use std::{fmt::Write, hash::Hash, hint::black_box, sync::Once};
 
 use gungraun::{Dhat, prelude::*};
 use hir::{Crate, Module};
@@ -11,7 +11,7 @@ use ide_db::{
 };
 use rayon::ThreadPoolBuilder;
 use rowan::{GreenNodeData, GreenToken, SyntaxKind};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use salsa::Setter;
 use syntax::{Edition, GreenNode, SourceFile, SyntaxNode, TextSize};
 use syntax_bridge::{
@@ -233,6 +233,15 @@ fn setup_mutable_cursor() -> SyntaxNode {
     setup_nested_ast_id_map().clone_for_update()
 }
 
+fn setup_syntax_cursor_identity() -> (SyntaxNode, SyntaxNode) {
+    let green = setup_nested_ast_id_map().green().into_owned();
+    let identity = rowan::SyntaxTreeId::default();
+    (
+        SyntaxNode::new_root_with_id(green.clone(), identity),
+        SyntaxNode::new_root_with_id(green, identity),
+    )
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::nested_modules(setup_nested_ast_id_map())]
 fn nested_ast_id_map(source: SyntaxNode) -> usize {
@@ -264,6 +273,19 @@ fn syntax_token_at_offset(source: SyntaxNode) -> usize {
             .map(|token| u32::from(token.text_range().start()) as usize)
             .sum(),
     )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::shared_tree(setup_syntax_cursor_identity())]
+fn syntax_cursor_identity((left, right): (SyntaxNode, SyntaxNode)) -> (usize, u64) {
+    let mut equal = 0;
+    let mut hasher = FxHasher::default();
+    for _ in 0..4096 {
+        equal += usize::from(black_box(&left) == black_box(&right));
+        black_box(&left).hash(&mut hasher);
+        black_box(&right).hash(&mut hasher);
+    }
+    black_box((equal, std::hash::Hasher::finish(&hasher)))
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
@@ -641,6 +663,7 @@ library_benchmark_group!(
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
+        syntax_cursor_identity,
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
         mutable_cursor_detach_attach_nonzero,
