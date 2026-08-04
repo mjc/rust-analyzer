@@ -474,6 +474,20 @@ fn setup_wide_green_node() -> GreenNode {
     GreenNode::new(SyntaxKind(u16::MAX), [])
 }
 
+fn setup_green_text_len(kind: SyntaxKind, text: &str) -> (GreenNode, GreenToken) {
+    let token = GreenToken::new(kind, text);
+    let node = GreenNode::new(kind, [token.clone().into()]);
+    (node, token)
+}
+
+fn setup_compact_green_text_len() -> (GreenNode, GreenToken) {
+    setup_green_text_len(SyntaxKind(0), "token")
+}
+
+fn setup_wide_green_text_len() -> (GreenNode, GreenToken) {
+    setup_green_text_len(SyntaxKind(u16::MAX), &"x".repeat(70_000))
+}
+
 fn setup_green_node_for_child_nth() -> GreenNode {
     let token = GreenToken::new(SyntaxKind(0), "token");
     GreenNode::new(SyntaxKind(0), (0..8).map(|_| token.clone().into()))
@@ -573,6 +587,22 @@ fn wide_green_node_data_access(node: GreenNode) -> usize {
                 black_box(node.kind()).0 as usize
                     + u32::from(black_box(node.text_len())) as usize
                     + black_box(node.children()).count()
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::compact(setup_compact_green_text_len())]
+#[bench::wide(setup_wide_green_text_len())]
+fn green_text_len_access((node, token): (GreenNode, GreenToken)) -> usize {
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let child = black_box(node.children().next().unwrap());
+                u32::from(black_box(node.text_len())) as usize
+                    + u32::from(black_box(token.text_len())) as usize
+                    + u32::from(black_box(child.text_len())) as usize
             })
             .sum(),
     )
@@ -818,6 +848,7 @@ library_benchmark_group!(
         promote_green_node_to_wide,
         green_token_data_access,
         wide_green_node_data_access,
+        green_text_len_access,
         green_child_nth,
         parse_source_files,
         retain_parsed_source_files,
