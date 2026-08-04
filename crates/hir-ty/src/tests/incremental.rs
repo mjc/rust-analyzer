@@ -36,6 +36,7 @@ fn foo() -> i32 {
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
@@ -77,6 +78,7 @@ fn foo() -> i32 {
         &[("InferenceResult < 'db >::for_body_", 0)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
@@ -125,6 +127,7 @@ fn baz() -> i32 {
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
@@ -193,6 +196,7 @@ fn baz() -> i32 {
         &[("InferenceResult < 'db >::for_body_", 1)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
@@ -249,6 +253,7 @@ $0",
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "TraitImpls < 'db >::for_crate_",
                 "lang_items",
@@ -283,6 +288,7 @@ pub struct NewStruct {
         &[("TraitImpls < 'db >::for_crate_", 1)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
@@ -324,6 +330,7 @@ $0",
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "TraitImpls < 'db >::for_crate_",
                 "lang_items",
@@ -359,6 +366,7 @@ pub enum SomeEnum {
         &[("TraitImpls < 'db >::for_crate_", 1)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
@@ -400,6 +408,7 @@ $0",
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "TraitImpls < 'db >::for_crate_",
                 "lang_items",
@@ -432,6 +441,7 @@ fn bar() -> f32 {
         &[("TraitImpls < 'db >::for_crate_", 1)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
@@ -477,6 +487,7 @@ $0",
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "TraitImpls < 'db >::for_crate_",
                 "lang_items",
@@ -517,6 +528,7 @@ impl SomeStruct {
         &[("TraitImpls < 'db >::for_crate_", 1)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
@@ -579,6 +591,7 @@ fn main() {
                 "file_item_tree_query",
                 "HirFileId::ast_id_map_",
                 "EditionedFileId::parse_",
+                "FileText::text_",
                 "real_span_map",
                 "TraitItems::query_with_diagnostics_",
                 "Body::of_",
@@ -671,6 +684,7 @@ fn main() {
         &[("trait_solve_shim", 0)],
         expect_test::expect![[r#"
             [
+                "FileText::text_",
                 "EditionedFileId::parse_",
                 "HirFileId::ast_id_map_",
                 "file_item_tree_query",
