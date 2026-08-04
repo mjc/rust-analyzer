@@ -514,6 +514,16 @@ fn construct_green_nodes((kind, token): (SyntaxKind, GreenToken)) -> usize {
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::compact_children(setup_green_node_construction(SyntaxKind(0)))]
+#[bench::wide_children(setup_green_node_construction(SyntaxKind(u16::MAX)))]
+fn construct_checkpointed_green_nodes((kind, token): (SyntaxKind, GreenToken)) -> usize {
+    let nodes = (0..4096)
+        .map(|_| GreenNode::new(kind, (0..8).map(|_| token.clone().into())))
+        .collect::<Vec<_>>();
+    black_box(nodes.iter().map(|node| node.children().count()).sum())
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::node_and_token(setup_green_refcount_pair())]
 fn clone_drop_green_refs(pair: (GreenNode, GreenToken)) -> usize {
     let (node, token) = pair;
@@ -803,6 +813,7 @@ library_benchmark_group!(
         drop_green_nodes,
         construct_green_tokens,
         construct_green_nodes,
+        construct_checkpointed_green_nodes,
         clone_drop_green_refs,
         promote_green_node_to_wide,
         green_token_data_access,
