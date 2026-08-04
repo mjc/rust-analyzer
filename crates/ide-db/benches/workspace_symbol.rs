@@ -361,6 +361,18 @@ fn setup_syntax_roots_for_drop() -> Vec<SyntaxNode> {
     (0..16_384).map(|_| SyntaxNode::new_root(green.clone())).collect()
 }
 
+fn setup_green_for_syntax_root_construction() -> GreenNode {
+    GreenNode::new(SyntaxKind(0), [])
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::owned_roots(setup_green_for_syntax_root_construction())]
+fn construct_syntax_roots(green: GreenNode) -> usize {
+    let roots =
+        (0..16_384).map(|_| SyntaxNode::new_root(black_box(green.clone()))).collect::<Vec<_>>();
+    black_box(roots.len())
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::owned_roots(setup_syntax_roots_for_drop())]
 fn drop_syntax_roots(roots: Vec<SyntaxNode>) {
@@ -783,6 +795,7 @@ library_benchmark_group!(
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
         mutable_cursor_detach_attach_nonzero,
+        construct_syntax_roots,
         drop_syntax_roots,
         clone_syntax_root_for_update,
         clone_syntax_subtree_root,
