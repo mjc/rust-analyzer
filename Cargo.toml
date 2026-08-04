@@ -35,7 +35,7 @@ inherits = "release"
 debug = 2
 
 [patch.'crates-io']
-rowan = { git = "https://github.com/mjc/rowan", rev = "c681d03e0d15b4c8b56d3eece830bd5781d6799a" }
+rowan = { git = "https://github.com/mjc/rowan", rev = "01e1f04527b9196ae259e46a6bb48e5ae959e60f" }
 
 # line-index = { path = "lib/line-index" }
 # la-arena = { path = "lib/la-arena" }
