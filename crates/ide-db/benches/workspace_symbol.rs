@@ -462,6 +462,11 @@ fn setup_wide_green_node() -> GreenNode {
     GreenNode::new(SyntaxKind(u16::MAX), [])
 }
 
+fn setup_green_node_for_child_nth() -> GreenNode {
+    let token = GreenToken::new(SyntaxKind(0), "token");
+    GreenNode::new(SyntaxKind(0), (0..8).map(|_| token.clone().into()))
+}
+
 fn setup_green_child_for_promotion() -> GreenToken {
     GreenToken::new(SyntaxKind(0), &"x".repeat(1 << 14))
 }
@@ -546,6 +551,19 @@ fn wide_green_node_data_access(node: GreenNode) -> usize {
                 black_box(node.kind()).0 as usize
                     + u32::from(black_box(node.text_len())) as usize
                     + black_box(node.children()).count()
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::after_checkpoint(setup_green_node_for_child_nth())]
+fn green_child_nth(node: GreenNode) -> usize {
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let child = black_box(node.children().nth(7).unwrap());
+                u32::from(black_box(child.text_len())) as usize
             })
             .sum(),
     )
@@ -776,6 +794,7 @@ library_benchmark_group!(
         promote_green_node_to_wide,
         green_token_data_access,
         wide_green_node_data_access,
+        green_child_nth,
         parse_source_files,
         retain_parsed_source_files,
         retain_shared_parsed_source_files,
