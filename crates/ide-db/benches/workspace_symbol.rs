@@ -334,6 +334,17 @@ fn mutable_cursor_detach_attach_nonzero(source: SyntaxNode) -> usize {
     )
 }
 
+fn setup_syntax_roots_for_drop() -> Vec<SyntaxNode> {
+    let green = GreenNode::new(SyntaxKind(0), []);
+    (0..16_384).map(|_| SyntaxNode::new_root(green.clone())).collect()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::owned_roots(setup_syntax_roots_for_drop())]
+fn drop_syntax_roots(roots: Vec<SyntaxNode>) {
+    drop(black_box(roots));
+}
+
 fn setup_tiny_sources() -> Vec<String> {
     (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
 }
@@ -686,6 +697,7 @@ library_benchmark_group!(
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
         mutable_cursor_detach_attach_nonzero,
+        drop_syntax_roots,
         drop_green_nodes,
         construct_green_tokens,
         construct_green_nodes,
