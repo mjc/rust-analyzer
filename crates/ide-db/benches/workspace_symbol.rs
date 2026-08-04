@@ -13,7 +13,10 @@ use rayon::ThreadPoolBuilder;
 use rowan::{GreenNodeData, GreenToken, GreenTokenData, SyntaxKind};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use salsa::Setter;
-use syntax::{Edition, GreenNode, SourceFile, SyntaxNode, TextSize};
+use syntax::{
+    Edition, GreenNode, SourceFile, SyntaxNode, TextSize,
+    ast::{self, AstNode, HasModuleItem},
+};
 use syntax_bridge::{
     DocCommentDesugarMode,
     dummy_test_span_utils::{DUMMY, DummyTestSpanMap},
@@ -271,6 +274,25 @@ fn syntax_token_at_offset(source: SyntaxNode) -> usize {
             .step_by(16)
             .filter_map(|offset| source.token_at_offset(TextSize::from(offset)).left_biased())
             .map(|token| u32::from(token.text_range().start()) as usize)
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::first_module(setup_nested_ast_id_map())]
+fn syntax_typed_child_lookup(source: SyntaxNode) -> usize {
+    let file = SourceFile::cast(source).unwrap();
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let ast::Item::Module(module) = black_box(file.items().next().unwrap()) else {
+                    unreachable!()
+                };
+                let token = black_box(module.mod_token().unwrap());
+                usize::from(token.kind() == syntax::T![mod])
+                    + u32::from(module.syntax().text_range().start()) as usize
+                    + u32::from(token.text_range().start()) as usize
+            })
             .sum(),
     )
 }
@@ -738,6 +760,7 @@ library_benchmark_group!(
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
+        syntax_typed_child_lookup,
         syntax_cursor_identity,
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
