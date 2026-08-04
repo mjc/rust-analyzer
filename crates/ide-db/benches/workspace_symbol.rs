@@ -345,6 +345,51 @@ fn drop_syntax_roots(roots: Vec<SyntaxNode>) {
     drop(black_box(roots));
 }
 
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::immutable_root(setup_nested_ast_id_map())]
+fn clone_syntax_root_for_update(source: SyntaxNode) -> usize {
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let cloned = black_box(source.clone_for_update());
+                let len = u32::from(black_box(cloned.text_range()).len()) as usize;
+                drop(cloned);
+                len
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::immutable_root(setup_nested_ast_id_map())]
+fn clone_syntax_subtree_root(source: SyntaxNode) -> usize {
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let cloned = black_box(source.clone_subtree());
+                let len = u32::from(black_box(cloned.text_range()).len()) as usize;
+                drop(cloned);
+                len
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::mutable_root(setup_mutable_cursor())]
+fn clone_mutable_syntax_green(source: SyntaxNode) -> usize {
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let green = black_box(source.green().into_owned());
+                let len = u32::from(black_box(green.text_len())) as usize;
+                drop(green);
+                len
+            })
+            .sum(),
+    )
+}
+
 fn setup_tiny_sources() -> Vec<String> {
     (0..1024).map(|index| format!("fn f{index}() {{ let value = (); }}")).collect()
 }
@@ -698,6 +743,9 @@ library_benchmark_group!(
         mutable_cursor_detach_attach,
         mutable_cursor_detach_attach_nonzero,
         drop_syntax_roots,
+        clone_syntax_root_for_update,
+        clone_syntax_subtree_root,
+        clone_mutable_syntax_green,
         drop_green_nodes,
         construct_green_tokens,
         construct_green_nodes,
