@@ -533,6 +533,11 @@ fn setup_green_node_for_child_nth() -> GreenNode {
     GreenNode::new(SyntaxKind(0), (0..8).map(|_| token.clone().into()))
 }
 
+fn setup_wide_green_node_for_child_nth() -> GreenNode {
+    let token = GreenToken::new(SyntaxKind(0), "token");
+    GreenNode::new(SyntaxKind(u16::MAX), (0..8).map(|_| token.clone().into()))
+}
+
 fn setup_green_child_for_promotion() -> GreenToken {
     GreenToken::new(SyntaxKind(0), &"x".repeat(1 << 14))
 }
@@ -688,6 +693,7 @@ fn green_kind_access((node, token): (GreenNode, GreenToken)) -> usize {
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::after_checkpoint(setup_green_node_for_child_nth())]
+#[bench::wide_after_checkpoint(setup_wide_green_node_for_child_nth())]
 fn green_child_nth(node: GreenNode) -> usize {
     black_box(
         (0..4096)
