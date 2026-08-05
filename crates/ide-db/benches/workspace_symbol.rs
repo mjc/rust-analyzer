@@ -497,6 +497,11 @@ fn setup_green_child_for_promotion() -> GreenToken {
     GreenToken::new(SyntaxKind(0), &"x".repeat(1 << 14))
 }
 
+fn setup_checkpointed_green_children_for_promotion() -> [GreenToken; 8] {
+    let token = GreenToken::new(SyntaxKind(0), &"x".repeat(1 << 11));
+    std::array::from_fn(|_| token.clone())
+}
+
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::owned_nodes(setup_green_nodes_for_drop())]
 #[bench::leaf_children(setup_green_nodes_with_leaf_children())]
@@ -560,6 +565,13 @@ fn clone_drop_green_refs(pair: (GreenNode, GreenToken)) -> usize {
 #[bench::long_text(setup_green_child_for_promotion())]
 fn promote_green_node_to_wide(token: GreenToken) -> usize {
     let node = GreenNode::new(SyntaxKind(0), [token.into()]);
+    black_box(u32::from(node.text_len()) as usize)
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::checkpointed_long_text(setup_checkpointed_green_children_for_promotion())]
+fn promote_checkpointed_green_node_to_wide(tokens: [GreenToken; 8]) -> usize {
+    let node = GreenNode::new(SyntaxKind(0), tokens.map(Into::into));
     black_box(u32::from(node.text_len()) as usize)
 }
 
@@ -862,6 +874,7 @@ library_benchmark_group!(
         construct_checkpointed_green_nodes,
         clone_drop_green_refs,
         promote_green_node_to_wide,
+        promote_checkpointed_green_node_to_wide,
         green_token_data_access,
         wide_green_node_data_access,
         green_text_len_access,
