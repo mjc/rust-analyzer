@@ -14,7 +14,7 @@ use rowan::{GreenNodeData, GreenToken, GreenTokenData, SyntaxKind};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use salsa::Setter;
 use syntax::{
-    Edition, GreenNode, SourceFile, SyntaxNode, TextSize,
+    Edition, GreenNode, SourceFile, SyntaxNode, SyntaxToken, TextSize,
     ast::{self, AstNode, HasModuleItem},
 };
 use syntax_bridge::{
@@ -236,6 +236,14 @@ fn setup_mutable_cursor() -> SyntaxNode {
     setup_nested_ast_id_map().clone_for_update()
 }
 
+fn setup_mutable_token_cursor() -> (SyntaxNode, SyntaxToken) {
+    let source = SourceFile::parse("fn first() {} fn second() {}", Edition::CURRENT)
+        .syntax_node()
+        .clone_for_update();
+    let token = source.first_token().unwrap();
+    (source, token)
+}
+
 fn setup_syntax_cursor_identity() -> (SyntaxNode, SyntaxNode) {
     let green = setup_nested_ast_id_map().green().into_owned();
     let identity = rowan::SyntaxTreeId::default();
@@ -350,6 +358,20 @@ fn mutable_cursor_detach_attach_nonzero(source: SyntaxNode) -> usize {
             .map(|_| {
                 child.detach();
                 source.splice_children(1..1, vec![child.clone().into()]);
+                u32::from(black_box(source.text_range()).len()) as usize
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::token(setup_mutable_token_cursor())]
+fn mutable_token_detach_attach((source, token): (SyntaxNode, SyntaxToken)) -> usize {
+    black_box(
+        (0..256)
+            .map(|_| {
+                token.detach();
+                source.splice_children(0..0, vec![token.clone().into()]);
                 u32::from(black_box(source.text_range()).len()) as usize
             })
             .sum(),
@@ -891,6 +913,7 @@ library_benchmark_group!(
         mutable_cursor_child_reuse,
         mutable_cursor_detach_attach,
         mutable_cursor_detach_attach_nonzero,
+        mutable_token_detach_attach,
         construct_syntax_roots,
         drop_syntax_roots,
         clone_syntax_root_for_update,
