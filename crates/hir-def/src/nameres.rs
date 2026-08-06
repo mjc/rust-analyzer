@@ -390,7 +390,7 @@ pub(crate) struct DefMapPair<'db> {
     pub(crate) local: LocalDefMap,
 }
 
-#[salsa::tracked(lru = 128, returns(ref))]
+#[salsa::tracked(returns(ref))]
 pub(crate) fn crate_local_def_map(db: &dyn SourceDatabase, crate_id: Crate) -> DefMapPair<'_> {
     let krate = crate_id.data(db);
     let _p = tracing::info_span!(
@@ -422,10 +422,6 @@ pub(crate) fn crate_local_def_map(db: &dyn SourceDatabase, crate_id: Crate) -> D
         collector::collect_defs(db, def_map, TreeId::new(root_file_id.into(), None), None);
 
     DefMapPair::new(db, def_map, local_def_map)
-}
-
-pub fn set_crate_local_def_map_lru_capacity(db: &mut dyn SourceDatabase, capacity: usize) {
-    crate_local_def_map::set_lru_capacity(db, capacity);
 }
 
 #[salsa::tracked(returns(ref))]
