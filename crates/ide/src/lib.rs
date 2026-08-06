@@ -271,7 +271,7 @@ impl AnalysisHost {
         self.db.apply_change(change)
     }
 
-    /// NB: this clears the database
+    /// Returns retained Salsa query memory without clearing the database.
     pub fn per_query_memory_usage(&mut self) -> Vec<(String, profile::Bytes, usize)> {
         self.db.per_query_memory_usage()
     }
