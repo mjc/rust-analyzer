@@ -2427,7 +2427,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "rowan"
 version = "0.15.19"
-source = "git+https://github.com/mjc/rowan?rev=846c00ccaa5612900551170ed2a25e0fca18d1e9#846c00ccaa5612900551170ed2a25e0fca18d1e9"
+source = "git+https://github.com/mjc/rowan?rev=2187391b8072223e1978bf76e1aa403e89ee8b96#2187391b8072223e1978bf76e1aa403e89ee8b96"
 dependencies = [
  "countme",
  "hashbrown 0.14.5",
