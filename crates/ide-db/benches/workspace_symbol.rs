@@ -622,6 +622,27 @@ fn clone_drop_green_refs(pair: (GreenNode, GreenToken)) -> usize {
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::node_and_token(setup_green_refcount_pair())]
+fn clone_borrowed_green_refs(pair: (GreenNode, GreenToken)) -> usize {
+    let (node, token) = pair;
+    black_box(
+        (0..4096)
+            .map(|_| {
+                let node: &GreenNodeData = black_box(&node);
+                let token: &GreenTokenData = black_box(&token);
+                let node = black_box(node.to_owned());
+                let token = black_box(token.to_owned());
+                let len =
+                    u32::from(black_box(node.text_len())) + u32::from(black_box(token.text_len()));
+                drop(node);
+                drop(token);
+                len as usize
+            })
+            .sum(),
+    )
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
 #[bench::node_and_token(setup_green_identity_pairs())]
 fn compare_green_owner_identity(
     ((node, same_node), (token, same_token)): ((GreenNode, GreenNode), (GreenToken, GreenToken)),
@@ -951,6 +972,7 @@ library_benchmark_group!(
         construct_green_nodes,
         construct_checkpointed_green_nodes,
         clone_drop_green_refs,
+        clone_borrowed_green_refs,
         compare_green_owner_identity,
         promote_green_node_to_wide,
         promote_checkpointed_green_node_to_wide,
