@@ -403,34 +403,72 @@ pub fn set_module_symbols_lru_capacity(db: &mut dyn HirDatabase, capacity: usize
     module_symbols::set_lru_capacity(db, capacity);
 }
 
+#[salsa::tracked(lru = 128, returns(ref))]
+fn library_symbols<'db>(
+    db: &'db dyn HirDatabase,
+    source_root_id: InternedSourceRootId<'db>,
+) -> SymbolIndex<'db> {
+    let _p = tracing::info_span!("library_symbols").entered();
+
+    // We call this without attaching because this runs in parallel, so we need to attach here.
+    hir::attach_db(db, || {
+        let mut symbol_collector = SymbolCollector::new(db, true);
+
+        source_root_crates(db, source_root_id.id(db))
+            .iter()
+            .flat_map(|&krate| Crate::from(krate).modules(db))
+            // We specifically avoid calling other SymbolsDatabase queries here, even though they
+            // do the same thing, as the index for a library is not going to really ever change,
+            // and we do not want to store the module or crate indices for those in salsa unless we
+            // need to.
+            .for_each(|module| symbol_collector.collect(module));
+
+        SymbolIndex::new(symbol_collector.finish())
+    })
+}
+
+#[salsa::tracked(lru = 128, returns(ref))]
+fn extern_prelude_symbols<'db>(db: &'db dyn HirDatabase) -> SymbolIndex<'db> {
+    let _p = tracing::info_span!("extern_prelude_symbols").entered();
+
+    // We call this without attaching because this runs in parallel, so we need to attach here.
+    hir::attach_db(db, || {
+        let mut collector = SymbolCollector::new(db, false);
+
+        for krate in Crate::all(db) {
+            if krate
+                .display_name(db)
+                .is_none_or(|name| name.canonical_name().as_str() == "build-script-build")
+            {
+                continue;
+            }
+            if let CrateOrigin::Lang(LangCrateOrigin::Dependency | LangCrateOrigin::Other) =
+                krate.origin(db)
+            {
+                // don't show dependencies of the sysroot
+                continue;
+            }
+            collector.push_crate_root(krate);
+        }
+
+        SymbolIndex::new(collector.finish())
+    })
+}
+
+pub fn set_library_symbols_lru_capacity(db: &mut dyn HirDatabase, capacity: usize) {
+    library_symbols::set_lru_capacity(db, capacity);
+}
+
+pub fn set_extern_prelude_symbols_lru_capacity(db: &mut dyn HirDatabase, capacity: usize) {
+    extern_prelude_symbols::set_lru_capacity(db, capacity);
+}
+
 impl<'db> SymbolIndex<'db> {
     /// The symbol index for a given source root within library_roots.
     pub fn library_symbols(
         db: &'db dyn HirDatabase,
         source_root_id: SourceRootId,
     ) -> &'db SymbolIndex<'db> {
-        #[salsa::tracked(returns(ref))]
-        fn library_symbols<'db>(
-            db: &'db dyn HirDatabase,
-            source_root_id: InternedSourceRootId<'db>,
-        ) -> SymbolIndex<'db> {
-            let _p = tracing::info_span!("library_symbols").entered();
-
-            // We call this without attaching because this runs in parallel, so we need to attach here.
-            hir::attach_db(db, || {
-                let mut symbol_collector = SymbolCollector::new(db, true);
-
-                source_root_crates(db, source_root_id.id(db))
-                    .iter()
-                    .flat_map(|&krate| Crate::from(krate).modules(db))
-                    // we specifically avoid calling other SymbolsDatabase queries here, even though they do the same thing,
-                    // as the index for a library is not going to really ever change, and we do not want to store
-                    // the module or crate indices for those in salsa unless we need to.
-                    .for_each(|module| symbol_collector.collect(module));
-
-                SymbolIndex::new(symbol_collector.finish())
-            })
-        }
         library_symbols(db, InternedSourceRootId::new(db, source_root_id))
     }
 
@@ -442,34 +480,6 @@ impl<'db> SymbolIndex<'db> {
 
     /// The symbol index for all extern prelude crates.
     pub fn extern_prelude_symbols(db: &dyn HirDatabase) -> &SymbolIndex<'_> {
-        #[salsa::tracked(returns(ref))]
-        fn extern_prelude_symbols<'db>(db: &'db dyn HirDatabase) -> SymbolIndex<'db> {
-            let _p = tracing::info_span!("extern_prelude_symbols").entered();
-
-            // We call this without attaching because this runs in parallel, so we need to attach here.
-            hir::attach_db(db, || {
-                let mut collector = SymbolCollector::new(db, false);
-
-                for krate in Crate::all(db) {
-                    if krate
-                        .display_name(db)
-                        .is_none_or(|name| name.canonical_name().as_str() == "build-script-build")
-                    {
-                        continue;
-                    }
-                    if let CrateOrigin::Lang(LangCrateOrigin::Dependency | LangCrateOrigin::Other) =
-                        krate.origin(db)
-                    {
-                        // don't show dependencies of the sysroot
-                        continue;
-                    }
-                    collector.push_crate_root(krate);
-                }
-
-                SymbolIndex::new(collector.finish())
-            })
-        }
-
         extern_prelude_symbols(db)
     }
 }
@@ -859,6 +869,44 @@ pub(self) use crate::Trait as IsThisJustATrait;
         let mut query = Query::new("function_128".to_owned());
         query.exact();
         assert_eq!(world_symbols(&db, query).len(), 1);
+    }
+
+    #[test]
+    fn test_library_and_extern_symbols_after_lru_eviction() {
+        let (mut db, _) = RootDatabase::with_many_files(
+            r#"
+//- /main.rs crate:main deps:dep
+fn main() {}
+
+//- /dep/lib.rs crate:dep new_source_root:library
+pub fn dep_symbol() {}
+"#,
+        );
+
+        let mut local_roots = FxHashSet::default();
+        local_roots.insert(WORKSPACE);
+        LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+        db.update_base_query_lru_capacities(Some(1));
+
+        let mut library_query = Query::new("dep_symbol".to_owned());
+        library_query.libs();
+        library_query.exact();
+        assert_eq!(world_symbols(&db, library_query).len(), 1);
+
+        let mut crate_query = Query::new("::dep".to_owned());
+        crate_query.exact();
+        assert_eq!(world_symbols(&db, crate_query).len(), 1);
+
+        db.trigger_lru_eviction();
+
+        let mut library_query = Query::new("dep_symbol".to_owned());
+        library_query.libs();
+        library_query.exact();
+        assert_eq!(world_symbols(&db, library_query).len(), 1);
+
+        let mut crate_query = Query::new("::dep".to_owned());
+        crate_query.exact();
+        assert_eq!(world_symbols(&db, crate_query).len(), 1);
     }
 
     #[test]

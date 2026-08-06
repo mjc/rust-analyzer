@@ -225,6 +225,8 @@ impl RootDatabase {
         let lru_capacity = lru_capacity.unwrap_or(base_db::DEFAULT_PARSE_LRU_CAP);
         base_db::EditionedFileId::set_parse_lru_capacity(self, lru_capacity as usize);
         symbol_index::set_module_symbols_lru_capacity(self, lru_capacity as usize);
+        symbol_index::set_library_symbols_lru_capacity(self, lru_capacity as usize);
+        symbol_index::set_extern_prelude_symbols_lru_capacity(self, lru_capacity as usize);
     }
 
     pub fn update_lru_capacities(&mut self, lru_capacities: &FxHashMap<Box<str>, u16>) {
@@ -233,6 +235,12 @@ impl RootDatabase {
         }
         if let Some(&capacity) = lru_capacities.get("module_symbols") {
             symbol_index::set_module_symbols_lru_capacity(self, capacity as usize);
+        }
+        if let Some(&capacity) = lru_capacities.get("library_symbols") {
+            symbol_index::set_library_symbols_lru_capacity(self, capacity as usize);
+        }
+        if let Some(&capacity) = lru_capacities.get("extern_prelude_symbols") {
+            symbol_index::set_extern_prelude_symbols_lru_capacity(self, capacity as usize);
         }
     }
 }
