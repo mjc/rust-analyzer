@@ -224,6 +224,7 @@ impl RootDatabase {
     pub fn update_base_query_lru_capacities(&mut self, lru_capacity: Option<u16>) {
         let lru_capacity = lru_capacity.unwrap_or(base_db::DEFAULT_PARSE_LRU_CAP);
         base_db::EditionedFileId::set_parse_lru_capacity(self, lru_capacity as usize);
+        hir::db::set_crate_local_def_map_lru_capacity(self, lru_capacity as usize);
         symbol_index::set_module_symbols_lru_capacity(self, lru_capacity as usize);
         symbol_index::set_library_symbols_lru_capacity(self, lru_capacity as usize);
         symbol_index::set_extern_prelude_symbols_lru_capacity(self, lru_capacity as usize);
@@ -232,6 +233,9 @@ impl RootDatabase {
     pub fn update_lru_capacities(&mut self, lru_capacities: &FxHashMap<Box<str>, u16>) {
         if let Some(&capacity) = lru_capacities.get("EditionedFileId::parse") {
             base_db::EditionedFileId::set_parse_lru_capacity(self, capacity as usize);
+        }
+        if let Some(&capacity) = lru_capacities.get("crate_local_def_map") {
+            hir::db::set_crate_local_def_map_lru_capacity(self, capacity as usize);
         }
         if let Some(&capacity) = lru_capacities.get("module_symbols") {
             symbol_index::set_module_symbols_lru_capacity(self, capacity as usize);

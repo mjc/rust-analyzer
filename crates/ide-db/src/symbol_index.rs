@@ -673,7 +673,7 @@ mod tests {
 
     use base_db::SourceDatabase;
     use expect_test::expect_file;
-    use rustc_hash::FxHashSet;
+    use rustc_hash::{FxHashMap, FxHashSet};
     use salsa::Setter;
     use test_fixture::{WORKSPACE, WithFixture};
 
@@ -867,6 +867,34 @@ pub(self) use crate::Trait as IsThisJustATrait;
         db.trigger_lru_eviction();
 
         let mut query = Query::new("function_128".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+    }
+
+    #[test]
+    fn test_world_symbols_after_def_map_lru_eviction() {
+        let mut fixture = String::new();
+        for crate_id in 0..2 {
+            fixture.push_str(&format!("//- /crate{crate_id}/lib.rs crate:crate{crate_id}\n"));
+            fixture.push_str(&format!("pub fn symbol_{crate_id}() {{}}\n"));
+        }
+
+        let (mut db, _) = RootDatabase::with_many_files(&fixture);
+        let mut local_roots = FxHashSet::default();
+        local_roots.insert(WORKSPACE);
+        LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+        db.update_lru_capacities(&FxHashMap::from_iter([(
+            Box::<str>::from("crate_local_def_map"),
+            1,
+        )]));
+
+        let mut query = Query::new("symbol_0".to_owned());
+        query.exact();
+        assert_eq!(world_symbols(&db, query).len(), 1);
+
+        db.trigger_lru_eviction();
+
+        let mut query = Query::new("symbol_1".to_owned());
         query.exact();
         assert_eq!(world_symbols(&db, query).len(), 1);
     }

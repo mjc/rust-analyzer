@@ -96,6 +96,7 @@ pub use crate::{
     lang_item::crate_notable_traits, signatures::LocalFieldId,
 };
 pub use hir_expand::{Intern, Lookup, tt};
+pub use nameres::set_crate_local_def_map_lru_capacity;
 
 type FxIndexMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher>;
 
