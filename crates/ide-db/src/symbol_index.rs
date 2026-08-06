@@ -384,6 +384,25 @@ where
     }
 }
 
+#[salsa::tracked(lru = 128, returns(ref))]
+fn module_symbols<'db>(db: &'db dyn HirDatabase, module: hir::ModuleId) -> SymbolIndex<'db> {
+    let _p = tracing::info_span!("module_symbols").entered();
+
+    // We call this without attaching because this runs in parallel, so we need to attach here.
+    hir::attach_db(db, || {
+        let module: Module = module.into();
+        SymbolIndex::new(SymbolCollector::new_module(
+            db,
+            module,
+            !module.krate(db).origin(db).is_local(),
+        ))
+    })
+}
+
+pub fn set_module_symbols_lru_capacity(db: &mut dyn HirDatabase, capacity: usize) {
+    module_symbols::set_lru_capacity(db, capacity);
+}
+
 impl<'db> SymbolIndex<'db> {
     /// The symbol index for a given source root within library_roots.
     pub fn library_symbols(
@@ -418,24 +437,6 @@ impl<'db> SymbolIndex<'db> {
     /// The symbol index for a given module. These modules should only be in source roots that
     /// are inside local_roots.
     pub fn module_symbols(db: &dyn HirDatabase, module: Module) -> &SymbolIndex<'_> {
-        #[salsa::tracked(lru = 128, returns(ref))]
-        fn module_symbols<'db>(
-            db: &'db dyn HirDatabase,
-            module: hir::ModuleId,
-        ) -> SymbolIndex<'db> {
-            let _p = tracing::info_span!("module_symbols").entered();
-
-            // We call this without attaching because this runs in parallel, so we need to attach here.
-            hir::attach_db(db, || {
-                let module: Module = module.into();
-                SymbolIndex::new(SymbolCollector::new_module(
-                    db,
-                    module,
-                    !module.krate(db).origin(db).is_local(),
-                ))
-            })
-        }
-
         module_symbols(db, hir::ModuleId::from(module))
     }
 
@@ -847,6 +848,7 @@ pub(self) use crate::Trait as IsThisJustATrait;
         let mut local_roots = FxHashSet::default();
         local_roots.insert(WORKSPACE);
         LocalRoots::get(&db).set_roots(&mut db).to(local_roots);
+        db.update_base_query_lru_capacities(Some(1));
 
         let mut query = Query::new("function_0".to_owned());
         query.exact();
