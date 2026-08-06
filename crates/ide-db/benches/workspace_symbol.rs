@@ -14,7 +14,7 @@ use rowan::{GreenNodeData, GreenToken, GreenTokenData, SyntaxKind};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use salsa::Setter;
 use syntax::{
-    Edition, GreenNode, SourceFile, SyntaxNode, SyntaxToken, TextSize,
+    Edition, GreenNode, SourceFile, SyntaxNode, SyntaxToken, TextRange, TextSize,
     ast::{self, AstNode, HasModuleItem},
 };
 use syntax_bridge::{
@@ -282,6 +282,25 @@ fn syntax_token_at_offset(source: SyntaxNode) -> usize {
             .step_by(16)
             .filter_map(|offset| source.token_at_offset(TextSize::from(offset)).left_biased())
             .map(|token| u32::from(token.text_range().start()) as usize)
+            .sum(),
+    )
+}
+
+fn setup_syntax_child_ranges() -> (SyntaxNode, Vec<TextRange>) {
+    let source = setup_nested_ast_id_map();
+    let ranges = source.children_with_tokens().map(|child| child.text_range()).collect();
+    (source, ranges)
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::direct_children(setup_syntax_child_ranges())]
+fn syntax_child_at_range((source, ranges): (SyntaxNode, Vec<TextRange>)) -> usize {
+    black_box(
+        (0..4096)
+            .map(|index| {
+                let range = ranges[index % ranges.len()];
+                source.child_or_token_at_range(black_box(range)).unwrap().index()
+            })
             .sum(),
     )
 }
@@ -955,6 +974,7 @@ library_benchmark_group!(
         nested_ast_id_map,
         syntax_cursor_traversal,
         syntax_token_at_offset,
+        syntax_child_at_range,
         syntax_typed_child_lookup,
         syntax_cursor_identity,
         mutable_cursor_child_reuse,
