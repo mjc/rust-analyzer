@@ -148,6 +148,7 @@ fn check_licenses(sh: &Shell) {
         "MIT OR Apache-2.0",
         "MIT OR Zlib OR Apache-2.0",
         "MIT",
+        "MIT or Apache-2.0",
         "MIT/Apache-2.0",
         "MPL-2.0",
         "Unicode-3.0",
