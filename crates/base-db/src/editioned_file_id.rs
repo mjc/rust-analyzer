@@ -17,16 +17,16 @@ pub struct EditionedFileId {
     field: span::EditionedFileId,
 }
 
+#[salsa::tracked(lru = 64, returns(clone), self_ty = EditionedFileId)]
+fn parse(db: &dyn SourceDatabase, file: EditionedFileId) -> syntax::Parse<ast::SourceFile> {
+    let _p = tracing::info_span!("parse", ?file).entered();
+    let (file_id, edition) = file.unpack(db);
+    let text = db.file_text(file_id).text(db);
+    ast::SourceFile::parse(text, edition)
+}
+
 #[salsa::tracked]
 impl EditionedFileId {
-    #[salsa::tracked(lru = 64, returns(clone))]
-    pub fn parse(self, db: &dyn SourceDatabase) -> syntax::Parse<ast::SourceFile> {
-        let _p = tracing::info_span!("parse", ?self).entered();
-        let (file_id, edition) = self.unpack(db);
-        let text = db.file_text(file_id).text(db);
-        ast::SourceFile::parse(text, edition)
-    }
-
     // firewall query
     #[salsa::tracked(returns(as_deref))]
     pub fn parse_errors(self, db: &dyn SourceDatabase) -> Option<Box<[SyntaxError]>> {
@@ -39,6 +39,15 @@ impl EditionedFileId {
 }
 
 impl EditionedFileId {
+    /// Set the retained syntax-tree parse capacity for this database.
+    pub fn set_parse_lru_capacity(db: &mut dyn SourceDatabase, capacity: usize) {
+        parse::set_lru_capacity(db, capacity);
+    }
+
+    pub fn parse(self, db: &dyn SourceDatabase) -> syntax::Parse<ast::SourceFile> {
+        parse(db, self)
+    }
+
     #[inline]
     pub fn new(db: &dyn Database, file_id: FileId, edition: Edition) -> Self {
         Self::from_span_file_id(db, span::EditionedFileId::new(file_id, edition))

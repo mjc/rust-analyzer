@@ -216,40 +216,27 @@ impl RootDatabase {
         hir::db::set_expand_proc_attr_macros(self, true);
     }
 
-    pub fn update_base_query_lru_capacities(&mut self, _lru_capacity: Option<u16>) {
-        // let lru_capacity = lru_capacity.unwrap_or(base_db::DEFAULT_PARSE_LRU_CAP);
-        // base_db::FileTextQuery.in_db_mut(self).set_lru_capacity(DEFAULT_FILE_TEXT_LRU_CAP);
-        // base_db::ParseQuery.in_db_mut(self).set_lru_capacity(lru_capacity);
-        // // macro expansions are usually rather small, so we can afford to keep more of them alive
-        // hir::db::ParseMacroExpansionQuery.in_db_mut(self).set_lru_capacity(4 * lru_capacity);
-        // hir::db::BorrowckQuery.in_db_mut(self).set_lru_capacity(base_db::DEFAULT_BORROWCK_LRU_CAP);
-        // hir::db::BodyWithSourceMapQuery.in_db_mut(self).set_lru_capacity(2048);
+    pub fn update_base_query_lru_capacities(&mut self, lru_capacity: Option<u16>) {
+        let lru_capacity = lru_capacity.unwrap_or(base_db::DEFAULT_PARSE_LRU_CAP) as usize;
+        base_db::EditionedFileId::set_parse_lru_capacity(self, lru_capacity);
+        symbol_index::set_module_symbols_lru_capacity(self, lru_capacity);
+        symbol_index::set_library_symbols_lru_capacity(self, lru_capacity);
+        symbol_index::set_extern_prelude_symbols_lru_capacity(self, lru_capacity);
     }
 
-    pub fn update_lru_capacities(&mut self, _lru_capacities: &FxHashMap<Box<str>, u16>) {
-        // FIXME(salsa-transition): bring this back; allow changing LRU settings at runtime.
-        // use hir::db as hir_db;
-
-        // base_db::FileTextQuery.in_db_mut(self).set_lru_capacity(DEFAULT_FILE_TEXT_LRU_CAP);
-        // base_db::ParseQuery.in_db_mut(self).set_lru_capacity(
-        //     lru_capacities
-        //         .get(stringify!(ParseQuery))
-        //         .copied()
-        //         .unwrap_or(base_db::DEFAULT_PARSE_LRU_CAP),
-        // );
-        // hir_db::ParseMacroExpansionQuery.in_db_mut(self).set_lru_capacity(
-        //     lru_capacities
-        //         .get(stringify!(ParseMacroExpansionQuery))
-        //         .copied()
-        //         .unwrap_or(4 * base_db::DEFAULT_PARSE_LRU_CAP),
-        // );
-        // hir_db::BorrowckQuery.in_db_mut(self).set_lru_capacity(
-        //     lru_capacities
-        //         .get(stringify!(BorrowckQuery))
-        //         .copied()
-        //         .unwrap_or(base_db::DEFAULT_BORROWCK_LRU_CAP),
-        // );
-        // hir::db::BodyWithSourceMapQuery.in_db_mut(self).set_lru_capacity(2048);
+    pub fn update_lru_capacities(&mut self, lru_capacities: &FxHashMap<Box<str>, u16>) {
+        if let Some(&capacity) = lru_capacities.get("EditionedFileId::parse") {
+            base_db::EditionedFileId::set_parse_lru_capacity(self, capacity as usize);
+        }
+        if let Some(&capacity) = lru_capacities.get("module_symbols") {
+            symbol_index::set_module_symbols_lru_capacity(self, capacity as usize);
+        }
+        if let Some(&capacity) = lru_capacities.get("library_symbols") {
+            symbol_index::set_library_symbols_lru_capacity(self, capacity as usize);
+        }
+        if let Some(&capacity) = lru_capacities.get("extern_prelude_symbols") {
+            symbol_index::set_extern_prelude_symbols_lru_capacity(self, capacity as usize);
+        }
     }
 }
 
