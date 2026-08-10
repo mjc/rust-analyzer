@@ -101,11 +101,7 @@ impl SyntaxTreeBuilder {
         };
         if let Some(shared) = shared {
             let token = shared.get_or_init(|| GreenToken::new(rowan_kind, text));
-            if kind == SyntaxKind::PUB_KW {
-                self.inner.token_from_static_green(token.clone());
-            } else {
-                self.inner.token_from_green(token.clone());
-            }
+            self.inner.token_from_static_green(token.clone());
         } else {
             self.inner.token(rowan_kind, text);
         }
