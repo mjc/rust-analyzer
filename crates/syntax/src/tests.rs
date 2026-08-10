@@ -27,8 +27,8 @@ fn main() {
 
 #[test]
 fn fixed_tokens_are_shared_between_trees() {
-    let first = SourceFile::parse("fn same() {}", Edition::CURRENT).syntax_node();
-    let second = SourceFile::parse("fn same() {}", Edition::CURRENT).syntax_node();
+    let first = SourceFile::parse("fn same() {\n    ()\n}", Edition::CURRENT).syntax_node();
+    let second = SourceFile::parse("fn same() {\n    ()\n}", Edition::CURRENT).syntax_node();
 
     let first_fn = first.first_token().unwrap();
     let second_fn = second.first_token().unwrap();
@@ -46,6 +46,18 @@ fn fixed_tokens_are_shared_between_trees() {
         .find(|token| token.kind() == SyntaxKind::IDENT)
         .unwrap();
     assert!(!std::ptr::eq(first_name.green(), second_name.green()));
+
+    let first_indent = first
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.text() == "\n    ")
+        .unwrap();
+    let second_indent = second
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.text() == "\n    ")
+        .unwrap();
+    assert!(std::ptr::eq(first_indent.green(), second_indent.green()));
 }
 
 #[test]
