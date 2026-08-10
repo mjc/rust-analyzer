@@ -43,6 +43,11 @@ use rayon::prelude::*;
 
 use crate::RootDatabase;
 
+#[cfg(test)]
+thread_local! {
+    static MODULE_SYMBOLS_EXECUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A query for searching symbols in the workspace or dependencies.
 ///
 /// This struct configures how symbol search is performed, including the search text,
@@ -399,11 +404,14 @@ impl<'db> SymbolIndex<'db> {
     /// The symbol index for a given module. These modules should only be in source roots that
     /// are inside local_roots.
     pub fn module_symbols(db: &dyn HirDatabase, module: Module) -> &SymbolIndex<'_> {
-        #[salsa::tracked(returns(ref))]
+        #[salsa::tracked(lru = 128, returns(ref))]
         fn module_symbols<'db>(
             db: &'db dyn HirDatabase,
             module: hir::ModuleId,
         ) -> SymbolIndex<'db> {
+            #[cfg(test)]
+            MODULE_SYMBOLS_EXECUTIONS.set(MODULE_SYMBOLS_EXECUTIONS.get() + 1);
+
             let _p = tracing::info_span!("module_symbols").entered();
 
             // We call this without attaching because this runs in parallel, so we need to attach here.
@@ -642,6 +650,29 @@ mod tests {
     use test_fixture::{WORKSPACE, WithFixture};
 
     use super::*;
+
+    #[test]
+    fn module_symbols_are_recomputed_after_lru_eviction() {
+        let mut fixture = String::from("//- /lib.rs crate:main\n");
+        for module in 0..129 {
+            fixture.push_str(&format!("mod m{module};\n"));
+        }
+        for module in 0..129 {
+            fixture.push_str(&format!("//- /m{module}.rs\nfn symbol_{module}() {{}}\n"));
+        }
+        let (mut db, _) = RootDatabase::with_many_files(&fixture);
+        let modules = Crate::from(db.test_crate()).modules(&db);
+        MODULE_SYMBOLS_EXECUTIONS.set(0);
+
+        for &module in &modules {
+            _ = SymbolIndex::module_symbols(&db, module);
+        }
+        assert_eq!(MODULE_SYMBOLS_EXECUTIONS.get(), modules.len());
+
+        salsa::Database::trigger_lru_eviction(&mut db);
+        _ = SymbolIndex::module_symbols(&db, modules[0]);
+        assert_eq!(MODULE_SYMBOLS_EXECUTIONS.get(), modules.len() + 1);
+    }
 
     #[test]
     fn test_symbol_index_collection() {
