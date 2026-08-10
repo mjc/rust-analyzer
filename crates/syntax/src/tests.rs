@@ -61,6 +61,18 @@ fn fixed_tokens_are_shared_between_trees() {
 }
 
 #[test]
+fn fixed_token_leaf_nodes_are_shared_between_trees() {
+    let first = SourceFile::parse("pub fn first() {}", Edition::CURRENT).syntax_node();
+    let second = SourceFile::parse("pub fn second() {}", Edition::CURRENT).syntax_node();
+
+    let first_visibility =
+        first.descendants().find(|node| node.kind() == SyntaxKind::VISIBILITY).unwrap();
+    let second_visibility =
+        second.descendants().find(|node| node.kind() == SyntaxKind::VISIBILITY).unwrap();
+    assert!(std::ptr::eq(first_visibility.green(), second_visibility.green()));
+}
+
+#[test]
 fn benchmark_parser() {
     if std::env::var("RUN_SLOW_BENCHES").is_err() {
         return;
