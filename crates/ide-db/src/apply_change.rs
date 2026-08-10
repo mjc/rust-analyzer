@@ -162,3 +162,29 @@ impl RootDatabase {
         acc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use test_fixture::WithFixture;
+
+    use super::*;
+
+    #[test]
+    fn per_query_memory_usage_reports_current_salsa_queries() {
+        let (db, _) =
+            RootDatabase::with_many_files("//- /main.rs crate:main\nfn searched_function() {}\n");
+        let mut db = db;
+        let mut query = crate::symbol_index::Query::new("searched_function".to_owned());
+        query.exact();
+        assert_eq!(crate::symbol_index::world_symbols(&db, query).len(), 1);
+
+        let memory = db.per_query_memory_usage();
+        assert!(
+            memory.iter().any(|(name, bytes, entries)| {
+                name == "module_symbols" && *bytes > Bytes::new(0) && *entries > 0
+            }),
+            "Salsa query report did not include module_symbols: {:?}",
+            memory.iter().map(|(name, _, _)| name).collect::<Vec<_>>()
+        );
+    }
+}
