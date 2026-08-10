@@ -240,15 +240,27 @@ enum FileTextStorageKind {
 }
 
 impl FileTextStorage {
-    fn new(text: &str, _durability: Durability) -> FileTextStorage {
-        FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)))
+    fn new(text: &str, durability: Durability) -> FileTextStorage {
+        if durability != Durability::HIGH {
+            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
+        }
+
+        let compressed = lz4_flex::compress_prepend_size(text.as_bytes());
+        if text.len() <= compressed.len() {
+            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
+        }
+        FileTextStorage(FileTextStorageKind::Compressed(Arc::from(compressed)))
     }
 
     fn text(&self) -> Arc<str> {
         match &self.0 {
             FileTextStorageKind::Plain(text) => Arc::clone(text),
-            FileTextStorageKind::Compressed(_) => {
-                unreachable!("compressed file text is not implemented")
+            FileTextStorageKind::Compressed(bytes) => {
+                let bytes = lz4_flex::decompress_size_prepended(bytes)
+                    .expect("internally compressed file text must be valid");
+                let text = String::from_utf8(bytes)
+                    .expect("internally compressed file text must be UTF-8");
+                Arc::from(text.as_str())
             }
         }
     }
