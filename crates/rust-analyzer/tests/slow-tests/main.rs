@@ -25,11 +25,12 @@ use std::{path::PathBuf, time::Instant};
 use ide_db::FxHashMap;
 use lsp_types::{
     CodeActionContext, CodeActionParams, CodeActionRequest, CompletionParams, CompletionRequest,
-    DidOpenTextDocumentNotification, DidOpenTextDocumentParams, DocumentFormattingParams,
-    DocumentFormattingRequest, DocumentRangeFormattingParams, DocumentRangeFormattingRequest,
-    FileRename, FormattingOptions, HoverParams, HoverRequest, InlayHint, InlayHintParams,
-    InlayHintRequest, InlayHintResolveRequest, Label, LanguageKind, PartialResultParams, Position,
-    Range, RenameFilesParams, TextDocumentItem, TextDocumentPositionParams, TypeDefinitionParams,
+    DidCloseTextDocumentNotification, DidCloseTextDocumentParams, DidOpenTextDocumentNotification,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentFormattingRequest,
+    DocumentRangeFormattingParams, DocumentRangeFormattingRequest, FileRename, FormattingOptions,
+    HoverParams, HoverRequest, InlayHint, InlayHintParams, InlayHintRequest,
+    InlayHintResolveRequest, Label, LanguageKind, PartialResultParams, Position, Range,
+    RenameFilesParams, TextDocumentItem, TextDocumentPositionParams, TypeDefinitionParams,
     TypeDefinitionRequest, Uri, WillRenameFilesRequest, WorkDoneProgressParams,
     WorkspaceSymbolRequest,
 };
@@ -1534,6 +1535,64 @@ version = "0.0.0"
             }
           }
         }]),
+    );
+}
+
+#[test]
+fn test_workspace_symbol_uses_open_document() {
+    if skip_slow_tests() {
+        return;
+    }
+
+    let server = Project::with_fixture(
+        r#"
+//- /Cargo.toml
+[package]
+name = "foo"
+version = "0.0.0"
+
+//- /src/lib.rs
+pub fn disk_symbol() {}
+"#,
+    )
+    .server()
+    .wait_until_workspace_is_loaded();
+
+    let text_document = server.doc_id("src/lib.rs");
+    server.notification::<DidOpenTextDocumentNotification>(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: text_document.uri.clone(),
+            language_id: LanguageKind::Rust,
+            version: 1,
+            text: "pub fn dirty_symbol() {}\n".to_owned(),
+        },
+    });
+
+    for query in ["dirty_symbol", "dirty_symbol#"] {
+        let result = server.send_request::<WorkspaceSymbolRequest>(
+            serde_json::from_value(json!({"query": query})).unwrap(),
+        );
+        assert_eq!(
+            result
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|symbol| symbol["name"] == "dirty_symbol")
+                .count(),
+            1,
+            "query {query:?} returned {result}"
+        );
+    }
+
+    server.notification::<DidCloseTextDocumentNotification>(DidCloseTextDocumentParams {
+        text_document,
+    });
+    let result = server.send_request::<WorkspaceSymbolRequest>(
+        serde_json::from_value(json!({"query": "dirty_symbol#"})).unwrap(),
+    );
+    assert!(
+        result.as_array().unwrap().iter().all(|symbol| symbol["name"] != "dirty_symbol"),
+        "closed document remained in workspace symbols: {result}"
     );
 }
 
