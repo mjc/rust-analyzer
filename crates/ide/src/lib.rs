@@ -173,19 +173,67 @@ impl<T> RangeInfo<T> {
 #[derive(Debug)]
 pub struct AnalysisHost {
     db: RootDatabase,
-    active_snapshots: Arc<AtomicUsize>,
+}
+
+const GARBAGE_COLLECTION_ACTIVE: usize = 1 << (usize::BITS - 1);
+const MAX_ACTIVE_SNAPSHOTS: usize = GARBAGE_COLLECTION_ACTIVE - 1;
+static SNAPSHOT_STATE: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug)]
+struct ActiveSnapshot;
+
+impl ActiveSnapshot {
+    fn acquire() -> ActiveSnapshot {
+        loop {
+            let state = SNAPSHOT_STATE.load(Ordering::Relaxed);
+            if state == GARBAGE_COLLECTION_ACTIVE {
+                std::thread::yield_now();
+                continue;
+            }
+            if state == MAX_ACTIVE_SNAPSHOTS {
+                std::process::abort();
+            }
+            if SNAPSHOT_STATE
+                .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return ActiveSnapshot;
+            }
+        }
+    }
+}
+
+impl Drop for ActiveSnapshot {
+    fn drop(&mut self) {
+        let state = SNAPSHOT_STATE.fetch_sub(1, Ordering::Release);
+        debug_assert!(state != 0 && state != GARBAGE_COLLECTION_ACTIVE);
+    }
+}
+
+struct GarbageCollectionGuard;
+
+impl GarbageCollectionGuard {
+    fn acquire() -> Option<GarbageCollectionGuard> {
+        SNAPSHOT_STATE
+            .compare_exchange(0, GARBAGE_COLLECTION_ACTIVE, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| GarbageCollectionGuard)
+    }
+}
+
+impl Drop for GarbageCollectionGuard {
+    fn drop(&mut self) {
+        SNAPSHOT_STATE.store(0, Ordering::Release);
+    }
 }
 
 impl AnalysisHost {
     pub fn new(lru_capacity: Option<u16>) -> AnalysisHost {
-        AnalysisHost {
-            db: RootDatabase::new(lru_capacity),
-            active_snapshots: Arc::new(AtomicUsize::new(0)),
-        }
+        AnalysisHost { db: RootDatabase::new(lru_capacity) }
     }
 
     pub fn with_database(db: RootDatabase) -> AnalysisHost {
-        AnalysisHost { db, active_snapshots: Arc::new(AtomicUsize::new(0)) }
+        AnalysisHost { db }
     }
 
     pub fn update_lru_capacity(&mut self, lru_capacity: Option<u16>) {
@@ -199,8 +247,7 @@ impl AnalysisHost {
     /// Returns a snapshot of the current state, which you can query for
     /// semantic information.
     pub fn analysis(&self) -> Analysis {
-        self.active_snapshots.fetch_add(1, Ordering::Relaxed);
-        Analysis { db: self.db.clone(), active_snapshots: Some(Arc::clone(&self.active_snapshots)) }
+        Analysis { db: self.db.clone(), active_snapshot: Some(ActiveSnapshot::acquire()) }
     }
 
     /// Applies changes to the current state of the world. If there are
@@ -220,13 +267,13 @@ impl AnalysisHost {
         // self.db.trigger_cancellation();
         self.db.synthetic_write(Durability::LOW);
     }
-    /// Evict tracked query values when no public analysis snapshot is alive.
+    /// Evict tracked query values when no analysis snapshot or collection is active.
     ///
-    /// Returns `false` when collection was deferred because a snapshot still exists.
+    /// Returns `false` when collection was deferred.
     pub fn trigger_garbage_collection(&mut self) -> bool {
-        if self.active_snapshots.load(Ordering::Acquire) != 0 {
+        let Some(_guard) = GarbageCollectionGuard::acquire() else {
             return false;
-        }
+        };
 
         // Evict the tracked query LRUs first. Salsa's LRU eviction cancels outstanding queries,
         // but does not bump the revision; the synthetic write below is still needed to clear
@@ -259,14 +306,12 @@ impl Default for AnalysisHost {
 #[derive(Debug)]
 pub struct Analysis {
     db: RootDatabase,
-    active_snapshots: Option<Arc<AtomicUsize>>,
+    active_snapshot: Option<ActiveSnapshot>,
 }
 
 impl Drop for Analysis {
     fn drop(&mut self) {
-        if let Some(active_snapshots) = &self.active_snapshots {
-            active_snapshots.fetch_sub(1, Ordering::Release);
-        }
+        drop(self.active_snapshot.take());
     }
 }
 
@@ -339,7 +384,10 @@ impl Analysis {
     ) -> Option<(Analysis, RaFixtureAnalysis)> {
         let analysis =
             RaFixtureAnalysis::analyze_ra_fixture(sema, literal, expanded, config, on_cursor)?;
-        Some((Analysis { db: analysis.db.clone(), active_snapshots: None }, analysis))
+        Some((
+            Analysis { db: analysis.db.clone(), active_snapshot: Some(ActiveSnapshot::acquire()) },
+            analysis,
+        ))
     }
 
     /// Debug info about the current state of the analysis.
@@ -1016,5 +1064,15 @@ fn garbage_collection_defers_while_analysis_snapshot_is_alive() {
     assert!(!host.trigger_garbage_collection());
 
     drop(analysis);
-    assert!(host.trigger_garbage_collection());
+}
+
+#[test]
+fn garbage_collection_defers_for_snapshot_from_another_host() {
+    let mut collecting_host = AnalysisHost::default();
+    let other_host = AnalysisHost::default();
+    let analysis = other_host.analysis();
+
+    assert!(!collecting_host.trigger_garbage_collection());
+
+    drop(analysis);
 }
