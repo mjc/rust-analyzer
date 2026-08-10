@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use stdx::format_to_acc;
 use test_utils::{bench, bench_fixture, project_root};
 
-use crate::{AstNode, SourceFile, SyntaxError, ast, fuzz};
+use crate::{AstNode, SourceFile, SyntaxError, SyntaxKind, ast, fuzz};
 
 #[test]
 fn parse_smoke_test() {
@@ -23,6 +23,29 @@ fn main() {
     let parse = SourceFile::parse(code, Edition::CURRENT);
     // eprintln!("{:#?}", parse.syntax_node());
     assert!(parse.ok().is_ok());
+}
+
+#[test]
+fn fixed_tokens_are_shared_between_trees() {
+    let first = SourceFile::parse("fn same() {}", Edition::CURRENT).syntax_node();
+    let second = SourceFile::parse("fn same() {}", Edition::CURRENT).syntax_node();
+
+    let first_fn = first.first_token().unwrap();
+    let second_fn = second.first_token().unwrap();
+    assert_eq!(first_fn.kind(), SyntaxKind::FN_KW);
+    assert!(std::ptr::eq(first_fn.green(), second_fn.green()));
+
+    let first_name = first
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == SyntaxKind::IDENT)
+        .unwrap();
+    let second_name = second
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .find(|token| token.kind() == SyntaxKind::IDENT)
+        .unwrap();
+    assert!(!std::ptr::eq(first_name.green(), second_name.green()));
 }
 
 #[test]

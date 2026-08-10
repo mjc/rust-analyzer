@@ -6,9 +6,11 @@
 //! The *real* implementation is in the (language-agnostic) `rowan` crate, this
 //! module just wraps its API.
 
+use std::sync::OnceLock;
+
 use rowan::{GreenNodeBuilder, Language};
 
-use crate::{Parse, SyntaxError, SyntaxKind, TextSize};
+use crate::{Edition, Parse, SyntaxError, SyntaxKind, TextSize};
 
 pub(crate) use rowan::{GreenNode, GreenToken, NodeOrToken};
 
@@ -32,6 +34,9 @@ pub type SyntaxElement = rowan::SyntaxElement<RustLanguage>;
 pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<RustLanguage>;
 pub type SyntaxElementChildren = rowan::SyntaxElementChildren<RustLanguage>;
 pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
+
+static FIXED_TOKENS: [OnceLock<GreenToken>; SyntaxKind::__LAST as usize] =
+    [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
 
 #[derive(Default)]
 pub struct SyntaxTreeBuilder {
@@ -57,8 +62,14 @@ impl SyntaxTreeBuilder {
     }
 
     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
-        let kind = RustLanguage::kind_to_raw(kind);
-        self.inner.token(kind, text);
+        let rowan_kind = RustLanguage::kind_to_raw(kind);
+        if (kind.is_punct() || kind.is_keyword(Edition::LATEST)) && kind.text() == text {
+            let token =
+                FIXED_TOKENS[kind as usize].get_or_init(|| GreenToken::new(rowan_kind, text));
+            self.inner.token_from_green(token.clone());
+        } else {
+            self.inner.token(rowan_kind, text);
+        }
     }
 
     pub fn start_node(&mut self, kind: SyntaxKind) {
