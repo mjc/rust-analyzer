@@ -151,14 +151,14 @@ enum LinkNode<T> {
 
 #[derive(Default)]
 struct BindingsBuilder<'a> {
-    nodes: Vec<Vec<LinkNode<Rc<BindingKind<'a>>>>>,
+    nodes: Vec<SmallVec<[LinkNode<Rc<BindingKind<'a>>>; 1]>>,
     nested: Vec<Vec<LinkNode<usize>>>,
 }
 
 impl<'a> BindingsBuilder<'a> {
     fn alloc(&mut self) -> BindingsIdx {
         let idx = self.nodes.len();
-        self.nodes.push(Vec::new());
+        self.nodes.push(SmallVec::new());
         let nidx = self.nested.len();
         self.nested.push(Vec::new());
         BindingsIdx(idx, nidx)
@@ -166,13 +166,24 @@ impl<'a> BindingsBuilder<'a> {
 
     fn copy(&mut self, bindings: &BindingsIdx) -> BindingsIdx {
         let idx = copy_parent(bindings.0, &mut self.nodes);
-        let nidx = copy_parent(bindings.1, &mut self.nested);
+        let nidx = copy_nested_parent(bindings.1, &mut self.nested);
         return BindingsIdx(idx, nidx);
 
-        fn copy_parent<T>(idx: usize, target: &mut Vec<Vec<LinkNode<T>>>) -> usize
+        fn copy_parent<T>(idx: usize, target: &mut Vec<SmallVec<[LinkNode<T>; 1]>>) -> usize
         where
             T: Clone,
         {
+            let new_idx = target.len();
+            let len = target[idx].len();
+            if len < 4 {
+                target.push(target[idx].clone())
+            } else {
+                target.push(smallvec![LinkNode::Parent { idx, len }]);
+            }
+            new_idx
+        }
+
+        fn copy_nested_parent(idx: usize, target: &mut Vec<Vec<LinkNode<usize>>>) -> usize {
             let new_idx = target.len();
             let len = target[idx].len();
             if len < 4 {
@@ -209,7 +220,7 @@ impl<'a> BindingsBuilder<'a> {
     fn push_default(&mut self, idx: &mut BindingsIdx) {
         self.nested[idx.1].push(LinkNode::Node(idx.0));
         let new_idx = self.nodes.len();
-        self.nodes.push(Vec::new());
+        self.nodes.push(SmallVec::new());
         idx.0 = new_idx;
     }
 

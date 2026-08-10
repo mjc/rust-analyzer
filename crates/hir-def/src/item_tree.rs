@@ -137,7 +137,7 @@ pub fn file_item_tree(db: &dyn SourceDatabase, file_id: HirFileId, krate: Crate)
     }
 }
 
-#[salsa::tracked(returns(ref))]
+#[salsa::tracked(lru = 64, returns(ref))]
 fn file_item_tree_query(
     db: &dyn SourceDatabase,
     file_id: HirFileId,
