@@ -14,6 +14,7 @@ authors.workspace = true
 la-arena.workspace = true
 salsa = { workspace = true, optional = true }
 rustc-hash.workspace = true
+smallvec.workspace = true
 hashbrown.workspace = true
 text-size.workspace = true
 
