@@ -151,6 +151,69 @@ struct ScopeValuesItem {
     import: Option<ScopeImportOrGlob>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeImportOrExternCrateKind {
+    Import,
+    Glob,
+    ExternCrate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeImportOrExternCrate {
+    id: NonZeroU32,
+    use_tree: u32,
+    kind: ScopeImportOrExternCrateKind,
+}
+
+impl From<ImportOrExternCrate> for ScopeImportOrExternCrate {
+    fn from(import: ImportOrExternCrate) -> Self {
+        let (id, use_tree, kind) = match import {
+            ImportOrExternCrate::Import(import) => (
+                import.use_.as_id(),
+                u32::from(import.idx.into_raw()),
+                ScopeImportOrExternCrateKind::Import,
+            ),
+            ImportOrExternCrate::Glob(glob) => (
+                glob.use_.as_id(),
+                u32::from(glob.idx.into_raw()),
+                ScopeImportOrExternCrateKind::Glob,
+            ),
+            ImportOrExternCrate::ExternCrate(extern_crate) => {
+                (extern_crate.as_id(), 0, ScopeImportOrExternCrateKind::ExternCrate)
+            }
+        };
+        assert_eq!(id.generation(), 0, "interned provenance ID unexpectedly has a generation");
+        let id = NonZeroU32::new(id.index() + 1).unwrap();
+        Self { id, use_tree, kind }
+    }
+}
+
+impl From<ScopeImportOrExternCrate> for ImportOrExternCrate {
+    fn from(import: ScopeImportOrExternCrate) -> Self {
+        let id = salsa::Id::from_bits(u64::from(import.id.get()));
+        match import.kind {
+            ScopeImportOrExternCrateKind::Import => ImportOrExternCrate::Import(ImportId {
+                use_: UseId::from_id(id),
+                idx: Idx::from_raw(import.use_tree.into()),
+            }),
+            ScopeImportOrExternCrateKind::Glob => ImportOrExternCrate::Glob(GlobId {
+                use_: UseId::from_id(id),
+                idx: Idx::from_raw(import.use_tree.into()),
+            }),
+            ScopeImportOrExternCrateKind::ExternCrate => {
+                ImportOrExternCrate::ExternCrate(ExternCrateId::from_id(id))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeTypesItem {
+    def: ModuleDefId,
+    vis: Visibility,
+    import: Option<ScopeImportOrExternCrate>,
+}
+
 impl From<ValuesItem> for ScopeValuesItem {
     fn from(item: ValuesItem) -> Self {
         Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
@@ -163,8 +226,22 @@ impl From<ScopeValuesItem> for ValuesItem {
     }
 }
 
+impl From<TypesItem> for ScopeTypesItem {
+    fn from(item: TypesItem) -> Self {
+        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+    }
+}
+
+impl From<ScopeTypesItem> for TypesItem {
+    fn from(item: ScopeTypesItem) -> Self {
+        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+    }
+}
+
 const _: () = assert!(std::mem::size_of::<ScopeImportOrGlob>() == 12);
 const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 40);
+const _: () = assert!(std::mem::size_of::<ScopeImportOrExternCrate>() == 12);
+const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 40);
 
 impl PerNsGlobImports {
     pub(crate) fn contains_type(&self, module_id: ModuleId, name: Name) -> bool {
@@ -183,7 +260,7 @@ pub struct ItemScope {
     /// Defs visible in this scope. This includes `declarations`, but also
     /// imports. The imports belong to this module and can be resolved by using them on
     /// the `use_imports_*` fields.
-    types: FxIndexMap<Name, TypesItem>,
+    types: FxIndexMap<Name, ScopeTypesItem>,
     values: FxIndexMap<Name, ScopeValuesItem>,
     macros: FxIndexMap<Name, MacrosItem>,
     unresolved: FxHashSet<Name>,
@@ -236,6 +313,31 @@ mod tests {
     fn values_scope_entry_is_compact() {
         assert_eq!(std::mem::size_of::<ScopeValuesItem>(), 40);
     }
+
+    #[test]
+    fn type_scope_entry_is_compact() {
+        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 40);
+    }
+
+    #[test]
+    fn type_scope_imports_roundtrip() {
+        let imports = [
+            ImportOrExternCrate::Import(ImportId {
+                use_: UseId::from_id(salsa::Id::from_bits(1)),
+                idx: Idx::from_raw(2.into()),
+            }),
+            ImportOrExternCrate::Glob(GlobId {
+                use_: UseId::from_id(salsa::Id::from_bits(3)),
+                idx: Idx::from_raw(4.into()),
+            }),
+            ImportOrExternCrate::ExternCrate(ExternCrateId::from_id(salsa::Id::from_bits(5))),
+        ];
+
+        assert_eq!(
+            imports.map(|import| ImportOrExternCrate::from(ScopeImportOrExternCrate::from(import))),
+            imports
+        );
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -284,7 +386,7 @@ impl ItemScope {
     pub fn types(
         &self,
     ) -> impl Iterator<Item = (&Name, Item<ModuleDefId, ImportOrExternCrate>)> + '_ {
-        self.types.iter().map(|(n, &i)| (n, i))
+        self.types.iter().map(|(name, &item)| (name, item.into()))
     }
 
     pub fn macros(&self) -> impl Iterator<Item = (&Name, Item<MacroId, ImportOrExternCrate>)> + '_ {
@@ -415,7 +517,7 @@ impl ItemScope {
     /// Get a name from current module scope, legacy macros are not included
     pub fn get(&self, name: &Name) -> PerNs {
         PerNs {
-            types: self.types.get(name).copied(),
+            types: self.types.get(name).copied().map(Into::into),
             values: self.values.get(name).copied().map(Into::into),
             macros: self.macros.get(name).copied(),
         }
@@ -675,7 +777,7 @@ impl ItemScope {
                         self.use_imports_types
                             .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
-                    entry.insert(fld);
+                    entry.insert(fld.into());
                     changed = true;
                 }
                 Entry::Occupied(mut entry) => {
@@ -691,7 +793,7 @@ impl ItemScope {
                             // A non-glob import either shadows a glob import of the same
                             // name, or re-resolves a stale binding it recorded earlier.
                             if glob_imports.types.remove(&lookup)
-                                || entry.get().is_reresolved_by(&fld.def, import)
+                                || TypesItem::from(*entry.get()).is_reresolved_by(&fld.def, import)
                             {
                                 let prev = std::mem::replace(&mut fld.import, import);
                                 if let Some(import) = import {
@@ -701,7 +803,7 @@ impl ItemScope {
                                     );
                                 }
                                 cov_mark::hit!(import_shadowed);
-                                entry.insert(fld);
+                                entry.insert(fld.into());
                                 changed = true;
                             }
                         }
