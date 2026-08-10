@@ -111,7 +111,7 @@ pub(crate) enum DiagnosticsTaskKind {
 
 #[derive(Debug)]
 pub(crate) enum Task {
-    Response(lsp_server::Response),
+    Response { response: lsp_server::Response, evict_lru: bool },
     DiscoverLinkedProjects(DiscoverProjectParam),
     Retry(lsp_server::Request),
     Diagnostics(DiagnosticsTaskKind),
@@ -150,7 +150,7 @@ impl fmt::Debug for Event {
             {
                 return debug_non_verbose(not, f);
             }
-            Event::Task(Task::Response(resp)) => {
+            Event::Task(Task::Response { response: resp, .. }) => {
                 return f
                     .debug_struct("Response")
                     .field("id", &resp.id)
@@ -579,14 +579,19 @@ impl GlobalState {
 
             let current_revision = self.analysis_host.raw_database().nonce_and_revision().1;
             // no work is currently being done, now we can block a bit and clean up our garbage
+            // Salsa eviction is a write and waits for all snapshots to be dropped, so the worker
+            // pools must be empty before we trigger it.
             if self.task_pool.handle.is_empty()
                 && self.fmt_pool.handle.is_empty()
-                && current_revision != self.last_gc_revision
+                && (current_revision != self.last_gc_revision || self.workspace_symbol_gc_requested)
             {
                 let gc_start = Instant::now();
-                self.analysis_host.trigger_garbage_collection();
-                self.last_gc_revision = self.analysis_host.raw_database().nonce_and_revision().1;
-                gc_elapsed = Some(gc_start.elapsed());
+                if self.analysis_host.trigger_garbage_collection() {
+                    self.last_gc_revision =
+                        self.analysis_host.raw_database().nonce_and_revision().1;
+                    self.workspace_symbol_gc_requested = false;
+                    gc_elapsed = Some(gc_start.elapsed());
+                }
             }
         }
 
@@ -855,7 +860,10 @@ impl GlobalState {
     ) -> Option<Duration> {
         let mut cancellation_time = None;
         match task {
-            Task::Response(response) => self.respond(response),
+            Task::Response { response, evict_lru } => {
+                self.respond(response);
+                self.workspace_symbol_gc_requested |= evict_lru;
+            }
             // Only retry requests that haven't been cancelled. Otherwise we do unnecessary work.
             Task::Retry(req) if !self.is_completed(&req) => self.on_request(req),
             Task::Retry(_) => (),

@@ -59,8 +59,11 @@ mod view_memory_layout;
 mod view_mir;
 mod view_syntax_tree;
 
-use std::panic::{AssertUnwindSafe, UnwindSafe};
 use std::time::Duration;
+use std::{
+    panic::{AssertUnwindSafe, UnwindSafe},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use cfg::CfgOptions;
 use fetch_crates::CrateInfo;
@@ -170,15 +173,19 @@ impl<T> RangeInfo<T> {
 #[derive(Debug)]
 pub struct AnalysisHost {
     db: RootDatabase,
+    active_snapshots: Arc<AtomicUsize>,
 }
 
 impl AnalysisHost {
     pub fn new(lru_capacity: Option<u16>) -> AnalysisHost {
-        AnalysisHost { db: RootDatabase::new(lru_capacity) }
+        AnalysisHost {
+            db: RootDatabase::new(lru_capacity),
+            active_snapshots: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub fn with_database(db: RootDatabase) -> AnalysisHost {
-        AnalysisHost { db }
+        AnalysisHost { db, active_snapshots: Arc::new(AtomicUsize::new(0)) }
     }
 
     pub fn update_lru_capacity(&mut self, lru_capacity: Option<u16>) {
@@ -192,7 +199,8 @@ impl AnalysisHost {
     /// Returns a snapshot of the current state, which you can query for
     /// semantic information.
     pub fn analysis(&self) -> Analysis {
-        Analysis { db: self.db.clone() }
+        self.active_snapshots.fetch_add(1, Ordering::Relaxed);
+        Analysis { db: self.db.clone(), active_snapshots: Some(Arc::clone(&self.active_snapshots)) }
     }
 
     /// Applies changes to the current state of the world. If there are
@@ -212,14 +220,23 @@ impl AnalysisHost {
         // self.db.trigger_cancellation();
         self.db.synthetic_write(Durability::LOW);
     }
-    pub fn trigger_garbage_collection(&mut self) {
-        // We need to do a synthetic write right now due to how fixpoint cycles handle cancellation
-        // the revision bump there is a reset marker for clearing fixpoint poisoning.
-        // That is `trigger_lru_eviction` is currently bugged wrt to cancellation.
-        // self.db.trigger_lru_eviction();
+    /// Evict tracked query values when no public analysis snapshot is alive.
+    ///
+    /// Returns `false` when collection was deferred because a snapshot still exists.
+    pub fn trigger_garbage_collection(&mut self) -> bool {
+        if self.active_snapshots.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+
+        // Evict the tracked query LRUs first. Salsa's LRU eviction cancels outstanding queries,
+        // but does not bump the revision; the synthetic write below is still needed to clear
+        // fixpoint poisoning after that cancellation.
+        self.db.trigger_lru_eviction();
         self.db.synthetic_write(Durability::LOW);
         // SAFETY: `trigger_lru_eviction` triggers cancellation, so all running queries were canceled.
         unsafe { hir::collect_ty_garbage() };
+        profile::trim_memory();
+        true
     }
     pub fn raw_database(&self) -> &RootDatabase {
         &self.db
@@ -242,6 +259,15 @@ impl Default for AnalysisHost {
 #[derive(Debug)]
 pub struct Analysis {
     db: RootDatabase,
+    active_snapshots: Option<Arc<AtomicUsize>>,
+}
+
+impl Drop for Analysis {
+    fn drop(&mut self) {
+        if let Some(active_snapshots) = &self.active_snapshots {
+            active_snapshots.fetch_sub(1, Ordering::Release);
+        }
+    }
 }
 
 // As a general design guideline, `Analysis` API are intended to be independent
@@ -313,7 +339,7 @@ impl Analysis {
     ) -> Option<(Analysis, RaFixtureAnalysis)> {
         let analysis =
             RaFixtureAnalysis::analyze_ra_fixture(sema, literal, expanded, config, on_cursor)?;
-        Some((Analysis { db: analysis.db.clone() }, analysis))
+        Some((Analysis { db: analysis.db.clone(), active_snapshots: None }, analysis))
     }
 
     /// Debug info about the current state of the analysis.
@@ -980,4 +1006,15 @@ impl Analysis {
 fn analysis_is_send() {
     fn is_send<T: Send>() {}
     is_send::<Analysis>();
+}
+
+#[test]
+fn garbage_collection_defers_while_analysis_snapshot_is_alive() {
+    let mut host = AnalysisHost::default();
+    let analysis = host.analysis();
+
+    assert!(!host.trigger_garbage_collection());
+
+    drop(analysis);
+    assert!(host.trigger_garbage_collection());
 }

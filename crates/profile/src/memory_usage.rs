@@ -3,6 +3,15 @@
 //! Measures the total size of all currently allocated objects.
 use std::fmt;
 
+/// Return unused glibc heap pages to the operating system after a large purge.
+pub fn trim_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "jemalloc")))]
+    {
+        // SAFETY: `malloc_trim` is thread-safe and only releases free glibc heap pages.
+        unsafe { libc::malloc_trim(0) };
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct MemoryUsage {
     pub allocated: Bytes,
