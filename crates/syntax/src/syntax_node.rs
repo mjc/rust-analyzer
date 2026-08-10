@@ -37,8 +37,6 @@ pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
 static FIXED_TOKENS: [OnceLock<GreenToken>; SyntaxKind::__LAST as usize] =
     [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
-static FIXED_TOKEN_LEAF_NODES: [OnceLock<GreenNode>; SyntaxKind::__LAST as usize] =
-    [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
 const MAX_SHARED_NEWLINES: usize = 2;
 const MAX_SHARED_SPACES: usize = 32;
 static WHITESPACE_TOKENS: [[OnceLock<GreenToken>; MAX_SHARED_SPACES + 1]; MAX_SHARED_NEWLINES + 1] =
@@ -58,18 +56,10 @@ fn shared_whitespace(text: &str) -> Option<&'static OnceLock<GreenToken>> {
     Some(&WHITESPACE_TOKENS[newlines][spaces])
 }
 
+#[derive(Default)]
 pub struct SyntaxTreeBuilder {
     errors: Vec<SyntaxError>,
     inner: GreenNodeBuilder<'static>,
-}
-
-impl Default for SyntaxTreeBuilder {
-    fn default() -> Self {
-        Self {
-            errors: Vec::new(),
-            inner: GreenNodeBuilder::with_static_leaf_nodes(&FIXED_TOKEN_LEAF_NODES),
-        }
-    }
 }
 
 impl SyntaxTreeBuilder {
@@ -101,7 +91,7 @@ impl SyntaxTreeBuilder {
         };
         if let Some(shared) = shared {
             let token = shared.get_or_init(|| GreenToken::new(rowan_kind, text));
-            self.inner.token_from_static_green(token.clone());
+            self.inner.token_from_green(token.clone());
         } else {
             self.inner.token(rowan_kind, text);
         }
