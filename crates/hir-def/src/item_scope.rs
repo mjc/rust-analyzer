@@ -1,7 +1,7 @@
 //! Describes items defined or visible (ie, imported) in a certain scope.
 //! This is shared between modules and blocks.
 
-use std::{fmt, sync::LazyLock};
+use std::{fmt, num::NonZeroU32, sync::LazyLock};
 
 use base_db::{Crate, SourceDatabase};
 use either::Either;
@@ -10,6 +10,7 @@ use indexmap::map::Entry;
 use itertools::Itertools;
 use la_arena::Idx;
 use rustc_hash::{FxHashMap, FxHashSet};
+use salsa::plumbing::{AsId, FromId};
 use smallvec::SmallVec;
 use span::Edition;
 use stdx::{format_to, impl_from};
@@ -109,6 +110,62 @@ pub struct GlobId {
     pub idx: Idx<ast::UseTree>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeImportOrGlob {
+    // `UseId` is an interned key with unlimited revisions, so its Salsa ID is
+    // never recycled. Store its one-based index and verify that invariant when
+    // packing it.
+    use_id: NonZeroU32,
+    idx: Idx<ast::UseTree>,
+    is_glob: bool,
+}
+
+impl From<ImportOrGlob> for ScopeImportOrGlob {
+    fn from(import: ImportOrGlob) -> Self {
+        let (use_, idx, is_glob) = match import {
+            ImportOrGlob::Import(import) => (import.use_, import.idx, false),
+            ImportOrGlob::Glob(glob) => (glob.use_, glob.idx, true),
+        };
+        let id = use_.as_id();
+        assert_eq!(id.generation(), 0, "interned UseId unexpectedly has a generation");
+        let use_id = NonZeroU32::new(id.index() + 1).unwrap();
+        Self { use_id, idx, is_glob }
+    }
+}
+
+impl From<ScopeImportOrGlob> for ImportOrGlob {
+    fn from(import: ScopeImportOrGlob) -> Self {
+        let use_ = UseId::from_id(salsa::Id::from_bits(u64::from(import.use_id.get())));
+        if import.is_glob {
+            ImportOrGlob::Glob(GlobId { use_, idx: import.idx })
+        } else {
+            ImportOrGlob::Import(ImportId { use_, idx: import.idx })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeValuesItem {
+    def: ModuleDefId,
+    vis: Visibility,
+    import: Option<ScopeImportOrGlob>,
+}
+
+impl From<ValuesItem> for ScopeValuesItem {
+    fn from(item: ValuesItem) -> Self {
+        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+    }
+}
+
+impl From<ScopeValuesItem> for ValuesItem {
+    fn from(item: ScopeValuesItem) -> Self {
+        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<ScopeImportOrGlob>() == 12);
+const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 40);
+
 impl PerNsGlobImports {
     pub(crate) fn contains_type(&self, module_id: ModuleId, name: Name) -> bool {
         self.types.contains(&(module_id, name))
@@ -127,7 +184,7 @@ pub struct ItemScope {
     /// imports. The imports belong to this module and can be resolved by using them on
     /// the `use_imports_*` fields.
     types: FxIndexMap<Name, TypesItem>,
-    values: FxIndexMap<Name, ValuesItem>,
+    values: FxIndexMap<Name, ScopeValuesItem>,
     macros: FxIndexMap<Name, MacrosItem>,
     unresolved: FxHashSet<Name>,
 
@@ -171,6 +228,16 @@ pub struct ItemScope {
     derive_macros: FxHashMap<AstId<ast::Adt>, SmallVec<[DeriveMacroInvocation; 1]>>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn values_scope_entry_is_compact() {
+        assert_eq!(std::mem::size_of::<ScopeValuesItem>(), 40);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct DeriveMacroInvocation {
     attr_id: AttrId,
@@ -211,7 +278,7 @@ impl ItemScope {
     }
 
     pub fn values(&self) -> impl Iterator<Item = (&Name, Item<ModuleDefId, ImportOrGlob>)> + '_ {
-        self.values.iter().map(|(n, &i)| (n, i))
+        self.values.iter().map(|(name, &item)| (name, item.into()))
     }
 
     pub fn types(
@@ -349,7 +416,7 @@ impl ItemScope {
     pub fn get(&self, name: &Name) -> PerNs {
         PerNs {
             types: self.types.get(name).copied(),
-            values: self.values.get(name).copied(),
+            values: self.values.get(name).copied().map(Into::into),
             macros: self.macros.get(name).copied(),
         }
     }
@@ -659,7 +726,7 @@ impl ItemScope {
                         self.use_imports_values
                             .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
-                    entry.insert(fld);
+                    entry.insert(fld.into());
                     changed = true;
                 }
                 Entry::Occupied(mut entry)
@@ -667,7 +734,7 @@ impl ItemScope {
                 {
                     let import = import.and_then(ImportOrExternCrate::import_or_glob);
                     if glob_imports.values.remove(&lookup)
-                        || entry.get().is_reresolved_by(&fld.def, import)
+                        || ValuesItem::from(*entry.get()).is_reresolved_by(&fld.def, import)
                     {
                         cov_mark::hit!(import_shadowed);
 
@@ -676,7 +743,7 @@ impl ItemScope {
                             self.use_imports_values
                                 .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                         }
-                        entry.insert(fld);
+                        entry.insert(fld.into());
                         changed = true;
                     }
                 }
