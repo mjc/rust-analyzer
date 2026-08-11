@@ -844,6 +844,10 @@ impl AstIdMap {
         FileAstId { raw: self.erased_ast_id(ptr), _marker: PhantomData }
     }
 
+    pub fn erased_ast_id_for_ptr(&self, ptr: SyntaxNodePtr) -> ErasedFileAstId {
+        self.erased_ast_id(ptr)
+    }
+
     /// Blocks may not be allocated (if they have no items), so they have a different API.
     pub fn ast_id_for_ptr_for_block(
         &self,

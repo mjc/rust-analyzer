@@ -2,7 +2,7 @@
 
 use base_db::SourceDatabase;
 use span::Span;
-use syntax::{AstNode, TextRange, ast};
+use syntax::{AstNode, SyntaxKind, SyntaxNodePtr, TextRange, TextSize, ast};
 
 pub use span::RealSpanMap;
 
@@ -74,38 +74,58 @@ pub(crate) fn real_span_map(
     // this kind of joining makes them as stable as the AstIdMap (which is basically changing on
     // every input of the file)…
 
-    let item_to_entry =
-        |item: ast::Item| (item.syntax().text_range().start(), ast_id_map.ast_id(&item).erase());
-    // Top level items make for great anchors as they are the most stable and a decent boundary
-    pairs.extend(tree.items().map(item_to_entry));
+    let ptr_to_entry =
+        |ptr: SyntaxNodePtr| (ptr.text_range().start(), ast_id_map.erased_ast_id_for_ptr(ptr));
+    let item_to_entry = |item: ast::Item| ptr_to_entry(SyntaxNodePtr::new(item.syntax()));
+    let mut nested_pairs = Vec::new();
     // Unfortunately, assoc items are very common in Rust, so descend into those as well and make
     // them anchors too, but only if they have no attributes attached, as those might be proc-macros
     // and using different anchors inside of them will prevent spans from being joinable.
-    tree.items().for_each(|item| match &item {
-        ast::Item::ExternBlock(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(extern_item_list) = it.extern_item_list() {
-                pairs.extend(
-                    extern_item_list.extern_items().map(ast::Item::from).map(item_to_entry),
-                );
-            }
+    for ptr in top_level_item_ptrs(&tree) {
+        // Top level items make for great anchors as they are the most stable and a decent boundary.
+        pairs.push(ptr_to_entry(ptr));
+        if !matches!(
+            ptr.kind(),
+            SyntaxKind::EXTERN_BLOCK | SyntaxKind::IMPL | SyntaxKind::MODULE | SyntaxKind::TRAIT
+        ) {
+            continue;
         }
-        ast::Item::Impl(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(assoc_item_list) = it.assoc_item_list() {
-                pairs.extend(assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry));
+        let Some(item) = ptr.try_to_node(tree.syntax()).and_then(ast::Item::cast) else {
+            stdx::never!("top-level item pointer did not resolve");
+            continue;
+        };
+        match &item {
+            ast::Item::ExternBlock(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(extern_item_list) = it.extern_item_list() {
+                    nested_pairs.extend(
+                        extern_item_list.extern_items().map(ast::Item::from).map(item_to_entry),
+                    );
+                }
             }
-        }
-        ast::Item::Module(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(item_list) = it.item_list() {
-                pairs.extend(item_list.items().map(item_to_entry));
+            ast::Item::Impl(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(assoc_item_list) = it.assoc_item_list() {
+                    nested_pairs.extend(
+                        assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry),
+                    );
+                }
             }
-        }
-        ast::Item::Trait(it) if ast::attrs_including_inner(it).next().is_none() => {
-            if let Some(assoc_item_list) = it.assoc_item_list() {
-                pairs.extend(assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry));
+            ast::Item::Module(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(item_list) = it.item_list() {
+                    nested_pairs.extend(item_list.items().map(item_to_entry));
+                }
             }
+            ast::Item::Trait(it) if ast::attrs_including_inner(it).next().is_none() => {
+                if let Some(assoc_item_list) = it.assoc_item_list() {
+                    nested_pairs.extend(
+                        assoc_item_list.assoc_items().map(ast::Item::from).map(item_to_entry),
+                    );
+                }
+            }
+            _ => (),
         }
-        _ => (),
-    });
+    }
+    // Keep the existing top-level-then-nested anchor order without traversing top-level items twice.
+    pairs.extend(nested_pairs);
 
     RealSpanMap::from_file(
         editioned_file_id.span_file_id(db),
@@ -114,8 +134,39 @@ pub(crate) fn real_span_map(
     )
 }
 
+fn top_level_item_ptrs(tree: &ast::SourceFile) -> impl Iterator<Item = SyntaxNodePtr> + '_ {
+    let mut offset = TextSize::new(0);
+    tree.syntax().green().children().filter_map(move |child| {
+        let range = TextRange::at(offset, child.text_len());
+        offset += child.text_len();
+        let child = child.as_node()?;
+        let kind = SyntaxKind::from(child.kind().0);
+        ast::Item::can_cast(kind).then(|| SyntaxNodePtr::from_kind_and_range(kind, range))
+    })
+}
+
 impl MacroCallId {
     pub fn expansion_span_map(self, db: &dyn SourceDatabase) -> &ExpansionSpanMap {
         &self.parse_macro_expansion(db).value.1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use syntax::{AstNode, Edition, SourceFile, ast::HasModuleItem};
+
+    use super::top_level_item_ptrs;
+
+    #[test]
+    fn green_item_pointers_resolve_like_red_items() {
+        let tree =
+            SourceFile::parse("fn first() {}\n\n#[cfg(test)]\nstruct Second;\n", Edition::CURRENT)
+                .tree();
+        let expected = tree.items().map(|item| item.syntax().text_range()).collect::<Vec<_>>();
+        let actual = top_level_item_ptrs(&tree)
+            .map(|ptr| ptr.try_to_node(tree.syntax()).unwrap().text_range())
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
     }
 }
