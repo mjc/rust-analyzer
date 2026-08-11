@@ -151,14 +151,14 @@ struct ScopeValuesItem {
     import: Option<ScopeImportOrGlob>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScopeImportOrExternCrateKind {
     Import,
     Glob,
     ExternCrate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScopeImportOrExternCrate {
     id: NonZeroU32,
     use_tree: u32,
@@ -277,9 +277,9 @@ pub struct ItemScope {
     unnamed_trait_imports: ThinVec<(TraitId, Item<()>)>,
 
     // the resolutions of the imports of this scope
-    use_imports_types: FxHashMap<ScopeImportOrExternCrate, ImportOrDef>,
+    use_imports_types: FxHashMap<ImportOrExternCrate, ImportOrDef>,
     use_imports_values: FxHashMap<ImportOrGlob, ImportOrDef>,
-    use_imports_macros: FxHashMap<ScopeImportOrExternCrate, ImportOrDef>,
+    use_imports_macros: FxHashMap<ImportOrExternCrate, ImportOrDef>,
 
     use_decls: ThinVec<UseId>,
     extern_crate_decls: ThinVec<ExternCrateId>,
@@ -337,17 +337,6 @@ mod tests {
             imports.map(|import| ImportOrExternCrate::from(ScopeImportOrExternCrate::from(import))),
             imports
         );
-    }
-
-    #[test]
-    fn scope_import_or_extern_crate_is_hashable() {
-        let import = ScopeImportOrExternCrate {
-            id: NonZeroU32::new(1).unwrap(),
-            use_tree: 0,
-            kind: ScopeImportOrExternCrateKind::Import,
-        };
-        let mut imports = FxHashMap::default();
-        assert_eq!(imports.insert(import, ()), None);
     }
 }
 
@@ -409,7 +398,6 @@ impl ItemScope {
             .keys()
             .copied()
             .chain(self.use_imports_macros.keys().copied())
-            .map(ImportOrExternCrate::from)
             .filter_map(ImportOrExternCrate::import_or_glob)
             .chain(self.use_imports_values.keys().copied())
             .filter_map(ImportOrGlob::into_import)
@@ -421,10 +409,7 @@ impl ItemScope {
         let mut res = PerNs::none();
 
         let mut scope = self;
-        while let Some(&m) = scope
-            .use_imports_macros
-            .get(&ScopeImportOrExternCrate::from(ImportOrExternCrate::Import(import)))
-        {
+        while let Some(&m) = scope.use_imports_macros.get(&ImportOrExternCrate::Import(import)) {
             match m {
                 ImportOrDef::Import(i) => {
                     let module_id = i.use_.lookup(db).container;
@@ -439,10 +424,7 @@ impl ItemScope {
             }
         }
         let mut scope = self;
-        while let Some(&m) = scope
-            .use_imports_types
-            .get(&ScopeImportOrExternCrate::from(ImportOrExternCrate::Import(import)))
-        {
+        while let Some(&m) = scope.use_imports_types.get(&ImportOrExternCrate::Import(import)) {
             match m {
                 ImportOrDef::Import(i) => {
                     let module_id = i.use_.lookup(db).container;
@@ -792,10 +774,8 @@ impl ItemScope {
                     }
                     let prev = std::mem::replace(&mut fld.import, import);
                     if let Some(import) = import {
-                        self.use_imports_types.insert(
-                            import.into(),
-                            prev.map_or(ImportOrDef::Def(fld.def), Into::into),
-                        );
+                        self.use_imports_types
+                            .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
                     entry.insert(fld.into());
                     changed = true;
@@ -818,7 +798,7 @@ impl ItemScope {
                                 let prev = std::mem::replace(&mut fld.import, import);
                                 if let Some(import) = import {
                                     self.use_imports_types.insert(
-                                        import.into(),
+                                        import,
                                         prev.map_or(ImportOrDef::Def(fld.def), Into::into),
                                     );
                                 }
@@ -886,7 +866,7 @@ impl ItemScope {
                     let prev = std::mem::replace(&mut fld.import, import);
                     if let Some(import) = import {
                         self.use_imports_macros.insert(
-                            import.into(),
+                            import,
                             prev.map_or_else(|| ImportOrDef::Def(fld.def.into()), Into::into),
                         );
                     }
@@ -902,7 +882,7 @@ impl ItemScope {
                     let prev = std::mem::replace(&mut fld.import, import);
                     if let Some(import) = import {
                         self.use_imports_macros.insert(
-                            import.into(),
+                            import,
                             prev.map_or_else(|| ImportOrDef::Def(fld.def.into()), Into::into),
                         );
                     }
