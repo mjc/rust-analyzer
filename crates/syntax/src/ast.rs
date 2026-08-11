@@ -102,7 +102,7 @@ impl<N> AstChildren<N> {
 impl<N: AstNode> Iterator for AstChildren<N> {
     type Item = N;
     fn next(&mut self) -> Option<N> {
-        self.inner.find_map(N::cast)
+        self.inner.next_by_kind(N::can_cast).and_then(N::cast)
     }
 }
 
@@ -173,6 +173,18 @@ mod support {
 #[test]
 fn assert_ast_is_dyn_compatible() {
     fn _f(_: &dyn AstNode, _: &dyn HasName) {}
+}
+
+#[test]
+fn typed_children_skip_other_node_kinds() {
+    let file =
+        SourceFile::parse("struct First; fn ignored() {} struct Second;", parser::Edition::CURRENT)
+            .ok()
+            .unwrap();
+    let names = support::children::<Struct>(file.syntax())
+        .map(|item| item.name().unwrap().text().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["First", "Second"]);
 }
 
 #[test]
