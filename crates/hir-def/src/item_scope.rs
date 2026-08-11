@@ -110,7 +110,7 @@ pub struct GlobId {
     pub idx: Idx<ast::UseTree>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScopeImportOrGlob {
     // `UseId` is an interned key with unlimited revisions, so its Salsa ID is
     // never recycled. Store its one-based index and verify that invariant when
@@ -278,7 +278,7 @@ pub struct ItemScope {
 
     // the resolutions of the imports of this scope
     use_imports_types: FxHashMap<ScopeImportOrExternCrate, ImportOrDef>,
-    use_imports_values: FxHashMap<ScopeImportOrGlob, ImportOrDef>,
+    use_imports_values: FxHashMap<ImportOrGlob, ImportOrDef>,
     use_imports_macros: FxHashMap<ScopeImportOrExternCrate, ImportOrDef>,
 
     use_decls: ThinVec<UseId>,
@@ -349,17 +349,6 @@ mod tests {
         let mut imports = FxHashMap::default();
         assert_eq!(imports.insert(import, ()), None);
     }
-
-    #[test]
-    fn scope_import_or_glob_is_hashable() {
-        let import = ScopeImportOrGlob {
-            use_id: NonZeroU32::new(1).unwrap(),
-            idx: Idx::from_raw(0.into()),
-            is_glob: false,
-        };
-        let mut imports = FxHashMap::default();
-        assert_eq!(imports.insert(import, ()), None);
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -422,7 +411,7 @@ impl ItemScope {
             .chain(self.use_imports_macros.keys().copied())
             .map(ImportOrExternCrate::from)
             .filter_map(ImportOrExternCrate::import_or_glob)
-            .chain(self.use_imports_values.keys().copied().map(ImportOrGlob::from))
+            .chain(self.use_imports_values.keys().copied())
             .filter_map(ImportOrGlob::into_import)
             .sorted()
             .dedup()
@@ -468,9 +457,7 @@ impl ItemScope {
             }
         }
         let mut scope = self;
-        while let Some(&m) =
-            scope.use_imports_values.get(&ScopeImportOrGlob::from(ImportOrGlob::Import(import)))
-        {
+        while let Some(&m) = scope.use_imports_values.get(&ImportOrGlob::Import(import)) {
             match m {
                 ImportOrDef::Import(i) => {
                     let module_id = i.use_.lookup(db).container;
@@ -858,10 +845,8 @@ impl ItemScope {
                     let import = import.and_then(ImportOrExternCrate::import_or_glob);
                     let prev = std::mem::replace(&mut fld.import, import);
                     if let Some(import) = import {
-                        self.use_imports_values.insert(
-                            import.into(),
-                            prev.map_or(ImportOrDef::Def(fld.def), Into::into),
-                        );
+                        self.use_imports_values
+                            .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
                     entry.insert(fld.into());
                     changed = true;
@@ -877,10 +862,8 @@ impl ItemScope {
 
                         let prev = std::mem::replace(&mut fld.import, import);
                         if let Some(import) = import {
-                            self.use_imports_values.insert(
-                                import.into(),
-                                prev.map_or(ImportOrDef::Def(fld.def), Into::into),
-                            );
+                            self.use_imports_values
+                                .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                         }
                         entry.insert(fld.into());
                         changed = true;
