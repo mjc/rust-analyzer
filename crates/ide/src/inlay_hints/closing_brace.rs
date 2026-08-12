@@ -166,10 +166,7 @@ pub(super) fn hints(
     }
 
     let mut lines = 1;
-    let _ = node.text().try_for_each_chunk(|s| -> Result<(), ()> {
-        lines += s.matches('\n').count();
-        (lines < min_lines).then_some(()).ok_or(())
-    });
+    node.text().for_each_chunk(|s| lines += s.matches('\n').count());
     if lines < min_lines {
         return None;
     }
