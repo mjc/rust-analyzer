@@ -14,6 +14,7 @@ pub(crate) fn parse_text(text: &str, edition: parser::Edition) -> (GreenNode, Ve
     let lexed = parser::LexedStr::new(edition, text);
     let parser_input = lexed.to_input(edition);
     let parser_output = parser::TopEntryPoint::SourceFile.parse(&parser_input);
+    drop(parser_input);
     let (node, errors, _eof) = build_tree(lexed, parser_output);
     (node, errors)
 }
@@ -27,6 +28,7 @@ pub(crate) fn parse_text_at(
     let lexed = parser::LexedStr::new(edition, text);
     let parser_input = lexed.to_input(edition);
     let parser_output = entry.parse(&parser_input);
+    drop(parser_input);
     let (node, errors, _eof) = build_tree(lexed, parser_output);
     (node, errors)
 }

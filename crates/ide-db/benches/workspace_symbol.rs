@@ -669,6 +669,14 @@ fn setup_indented_sources() -> Vec<String> {
         .collect()
 }
 
+fn setup_large_parse_source() -> String {
+    let mut source = String::new();
+    for item in 0..16384 {
+        writeln!(source, "pub const ITEM_{item}: usize = {item};").unwrap();
+    }
+    source
+}
+
 fn setup_raw_string_sources(payload: &str) -> Vec<String> {
     (0..256).map(|index| format!("const VALUE_{index}: &str = r#\"{payload}\"#;\n")).collect()
 }
@@ -709,6 +717,14 @@ fn parse_source_files(sources: Vec<String>) -> usize {
             ) as usize
         })
         .sum()
+}
+
+#[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
+#[bench::large_file(setup_large_parse_source())]
+fn parse_large_source_file(source: String) -> usize {
+    u32::from(
+        SourceFile::parse(black_box(&source), Edition::CURRENT).syntax_node().text_range().len(),
+    ) as usize
 }
 
 #[library_benchmark(config = LibraryBenchmarkConfig::default().tool(Dhat::default()))]
@@ -859,6 +875,7 @@ library_benchmark_group!(
         green_kind_access,
         green_child_nth,
         parse_source_files,
+        parse_large_source_file,
         retain_parsed_source_files,
         retain_shared_parsed_source_files,
         fill_shared_parse_cache,
