@@ -61,6 +61,59 @@ fn fixed_tokens_are_shared_between_trees() {
 }
 
 #[test]
+fn shared_cache_reuses_dynamic_tokens_between_trees() {
+    let first = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT).syntax_node();
+    let second =
+        SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT).syntax_node();
+
+    let name = |file: &crate::SyntaxNode| {
+        file.descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find(|token| token.kind() == SyntaxKind::IDENT)
+            .unwrap()
+    };
+
+    assert_ne!(first, second);
+    assert_ne!(name(&first), name(&second));
+    assert!(std::ptr::eq(name(&first).green(), name(&second).green()));
+
+    let source = "fn same() { let value = ; }";
+    let before_clear = SourceFile::parse_with_shared_cache(source, Edition::CURRENT);
+
+    crate::clear_shared_parse_cache();
+
+    let after_clear = SourceFile::parse_with_shared_cache(source, Edition::CURRENT);
+    assert_eq!(before_clear.syntax_node().text().to_string(), source);
+    assert_eq!(after_clear.syntax_node().text().to_string(), source);
+    assert_eq!(before_clear.errors(), after_clear.errors());
+}
+
+#[test]
+fn repeated_parse_access_preserves_syntax_identity() {
+    let parse = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT);
+
+    assert_eq!(parse.syntax_node(), parse.syntax_node());
+}
+
+#[test]
+fn shared_cache_is_thread_safe() {
+    std::thread::scope(|scope| {
+        for thread in 0..8 {
+            scope.spawn(move || {
+                for item in 0..1024 {
+                    let source = format!(
+                        "fn shared() {{ let value = ({thread}, {item}); if true {{ shared(); }} }}"
+                    );
+                    let parse = SourceFile::parse_with_shared_cache(&source, Edition::CURRENT);
+                    assert_eq!(parse.syntax_node(), parse.syntax_node());
+                    assert_eq!(parse.syntax_node().text().to_string(), source);
+                }
+            });
+        }
+    });
+}
+
+#[test]
 fn benchmark_parser() {
     if std::env::var("RUN_SLOW_BENCHES").is_err() {
         return;

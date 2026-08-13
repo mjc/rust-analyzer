@@ -22,7 +22,7 @@ fn parse(db: &dyn SourceDatabase, file: EditionedFileId) -> syntax::Parse<ast::S
     let _p = tracing::info_span!("parse", ?file).entered();
     let (file_id, edition) = file.unpack(db);
     let text = db.file_text(file_id).text(db);
-    ast::SourceFile::parse(text, edition)
+    ast::SourceFile::parse_with_shared_cache(text, edition)
 }
 
 #[salsa::tracked]

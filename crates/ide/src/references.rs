@@ -489,6 +489,28 @@ mod tests {
     use crate::{SearchScope, fixture, references::FindAllRefsConfig};
 
     #[test]
+    fn references_across_identical_files() {
+        check(
+            r#"
+//- /lib.rs crate:main
+mod a;
+mod b;
+pub fn target$0() {}
+//- /a.rs
+pub fn duplicate() { crate::target(); }
+//- /b.rs
+pub fn duplicate() { crate::target(); }
+"#,
+            expect![[r#"
+                target Function FileId(0) 14..32 21..27
+
+                FileId(1) 28..34
+                FileId(2) 28..34
+            "#]],
+        );
+    }
+
+    #[test]
     fn exclude_tests() {
         check_with_filters(
             r#"

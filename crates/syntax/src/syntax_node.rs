@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use rowan::{GreenNodeBuilder, Language};
+use rowan::{GreenNodeBuilder, Language, SharedNodeCache};
 
 use crate::{Edition, Parse, SyntaxError, SyntaxKind, TextSize};
 
@@ -37,6 +37,7 @@ pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
 static FIXED_TOKENS: [OnceLock<GreenToken>; SyntaxKind::__LAST as usize] =
     [const { OnceLock::new() }; SyntaxKind::__LAST as usize];
+static SHARED_NODE_CACHE: OnceLock<SharedNodeCache> = OnceLock::new();
 const MAX_SHARED_NEWLINES: usize = 2;
 const MAX_SHARED_SPACES: usize = 32;
 static WHITESPACE_TOKENS: [[OnceLock<GreenToken>; MAX_SHARED_SPACES + 1]; MAX_SHARED_NEWLINES + 1] =
@@ -56,13 +57,24 @@ fn shared_whitespace(text: &str) -> Option<&'static OnceLock<GreenToken>> {
     Some(&WHITESPACE_TOKENS[newlines][spaces])
 }
 
-#[derive(Default)]
 pub struct SyntaxTreeBuilder {
     errors: Vec<SyntaxError>,
     inner: GreenNodeBuilder<'static>,
 }
 
+impl Default for SyntaxTreeBuilder {
+    fn default() -> Self {
+        Self { errors: Vec::new(), inner: GreenNodeBuilder::new() }
+    }
+}
+
 impl SyntaxTreeBuilder {
+    #[doc(hidden)]
+    pub fn with_shared_cache() -> Self {
+        let cache = SHARED_NODE_CACHE.get_or_init(SharedNodeCache::default);
+        Self { errors: Vec::new(), inner: GreenNodeBuilder::with_shared_cache(cache) }
+    }
+
     pub(crate) fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
         let green = self.inner.finish();
         (green, self.errors)
@@ -108,5 +120,12 @@ impl SyntaxTreeBuilder {
 
     pub fn error(&mut self, error: String, text_pos: TextSize) {
         self.errors.push(SyntaxError::new_at_offset(error, text_pos));
+    }
+}
+
+#[doc(hidden)]
+pub fn clear_shared_parse_cache() {
+    if let Some(cache) = SHARED_NODE_CACHE.get() {
+        cache.clear();
     }
 }

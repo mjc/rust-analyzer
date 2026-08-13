@@ -216,6 +216,11 @@ impl RootDatabase {
         hir::db::set_expand_proc_attr_macros(self, true);
     }
 
+    pub fn trigger_lru_eviction(&mut self) {
+        salsa::Database::trigger_lru_eviction(self);
+        syntax::clear_shared_parse_cache();
+    }
+
     pub fn update_base_query_lru_capacities(&mut self, lru_capacity: Option<u16>) {
         let lru_capacity = lru_capacity.unwrap_or(base_db::DEFAULT_PARSE_LRU_CAP) as usize;
         base_db::EditionedFileId::set_parse_lru_capacity(self, lru_capacity);
