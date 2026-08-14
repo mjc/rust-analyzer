@@ -15,7 +15,8 @@ use crate::{
 #[derive(Clone)]
 pub struct SpanMap {
     /// The offset stored here is the *end* of the node.
-    spans: Vec<SpanMapEntry>,
+    ends: Vec<TextSize>,
+    ranges: SpanMapRanges,
     base_indices: SpanMapBaseIndices,
     bases: SmallVec<[SpanMapBase; 2]>,
     /// Index of the matched macro arm on successful expansion for declarative macros.
@@ -23,10 +24,88 @@ pub struct SpanMap {
     pub matched_arm: Option<u32>,
 }
 
+const PACKED_RANGE_START_BITS: u32 = 18;
+const PACKED_RANGE_LEN_BITS: u32 = 13;
+const PACKED_RANGE_LEN_MASK: u32 = (1 << PACKED_RANGE_LEN_BITS) - 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct SpanMapEntry {
-    end: TextSize,
-    range: TextRange,
+struct PackedTextRange(u32);
+
+impl PackedTextRange {
+    fn new(range: TextRange) -> Option<Self> {
+        let start = u32::from(range.start());
+        let len = u32::from(range.len());
+        (start < 1 << PACKED_RANGE_START_BITS && len < 1 << PACKED_RANGE_LEN_BITS)
+            .then_some(Self(start << PACKED_RANGE_LEN_BITS | len))
+    }
+
+    fn get(self) -> TextRange {
+        let start = self.0 >> PACKED_RANGE_LEN_BITS;
+        let len = self.0 & PACKED_RANGE_LEN_MASK;
+        TextRange::at(start.into(), len.into())
+    }
+}
+
+#[derive(Clone)]
+enum SpanMapRanges {
+    Compact(Vec<PackedTextRange>),
+    Wide(Vec<TextRange>),
+}
+
+impl SpanMapRanges {
+    fn new() -> Self {
+        Self::Compact(Vec::new())
+    }
+
+    fn get(&self, index: usize) -> TextRange {
+        match self {
+            Self::Compact(ranges) => ranges[index].get(),
+            Self::Wide(ranges) => ranges[index],
+        }
+    }
+
+    fn push(&mut self, range: TextRange) {
+        match self {
+            Self::Compact(ranges) if let Some(range) = PackedTextRange::new(range) => {
+                ranges.push(range);
+            }
+            Self::Compact(ranges) => {
+                let mut wide = Vec::with_capacity(ranges.capacity());
+                wide.extend(ranges.iter().copied().map(PackedTextRange::get));
+                wide.push(range);
+                *self = Self::Wide(wide);
+            }
+            Self::Wide(ranges) => ranges.push(range),
+        }
+    }
+
+    fn replace_range(&mut self, range: std::ops::Range<usize>, replacement: Vec<TextRange>) {
+        let needs_wide =
+            replacement.iter().copied().any(|range| PackedTextRange::new(range).is_none());
+        if needs_wide && let Self::Compact(ranges) = self {
+            let mut wide = Vec::with_capacity(ranges.capacity());
+            wide.extend(ranges.iter().copied().map(PackedTextRange::get));
+            *self = Self::Wide(wide);
+        }
+        match self {
+            Self::Compact(ranges) => {
+                ranges.splice(
+                    range,
+                    replacement.into_iter().map(|range| PackedTextRange::new(range).unwrap()),
+                );
+            }
+            Self::Wide(ranges) => {
+                ranges.splice(range, replacement);
+            }
+        }
+    }
+
+    fn shrink_to_fit(&mut self) {
+        match self {
+            Self::Compact(ranges) => ranges.shrink_to_fit(),
+            Self::Wide(ranges) => ranges.shrink_to_fit(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -118,7 +197,7 @@ impl Eq for SpanMap {}
 
 impl Hash for SpanMap {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.spans.len().hash(state);
+        self.ends.len().hash(state);
         self.iter().for_each(|span| span.hash(state));
         self.matched_arm.hash(state);
     }
@@ -128,7 +207,8 @@ impl SpanMap {
     /// Creates a new empty [`SpanMap`].
     pub fn empty() -> Self {
         Self {
-            spans: Vec::new(),
+            ends: Vec::new(),
+            ranges: SpanMapRanges::new(),
             base_indices: SpanMapBaseIndices::new(),
             bases: SmallVec::new(),
             matched_arm: None,
@@ -138,11 +218,9 @@ impl SpanMap {
     /// Finalizes the [`SpanMap`], shrinking its backing storage and validating that the offsets are
     /// in order.
     pub fn finish(&mut self) {
-        always!(
-            self.spans.iter().array_windows().all(|[a, b]| a.end < b.end),
-            "spans are not in order"
-        );
-        self.spans.shrink_to_fit();
+        always!(self.ends.iter().array_windows().all(|[a, b]| a < b), "spans are not in order");
+        self.ends.shrink_to_fit();
+        self.ranges.shrink_to_fit();
         self.base_indices.shrink_to_fit();
         self.bases.shrink_to_fit();
     }
@@ -150,16 +228,17 @@ impl SpanMap {
     /// Pushes a new span onto the [`SpanMap`].
     pub fn push(&mut self, offset: TextSize, span: Span) {
         if cfg!(debug_assertions)
-            && let Some(last) = self.spans.last()
+            && let Some(last) = self.ends.last()
         {
             assert!(
-                last.end < offset,
+                *last < offset,
                 "last_offset({:?}) must be smaller than offset({offset:?})",
-                last.end,
+                last,
             );
         }
-        let (entry, base) = self.entry(offset, span);
-        self.spans.push(entry);
+        let base = self.base_index(span);
+        self.ends.push(offset);
+        self.ranges.push(span.range);
         self.base_indices.push(base);
     }
 
@@ -170,13 +249,13 @@ impl SpanMap {
         &self,
         span: Span,
     ) -> impl Iterator<Item = (TextRange, SyntaxContext)> + '_ {
-        self.spans.iter().copied().enumerate().filter_map(move |(idx, entry)| {
-            let s = self.span(idx, entry);
+        self.ends.iter().copied().enumerate().filter_map(move |(idx, end)| {
+            let s = self.span(idx);
             if !s.eq_ignoring_ctx(span) {
                 return None;
             }
-            let start = idx.checked_sub(1).map_or(TextSize::new(0), |prev| self.spans[prev].end);
-            Some((TextRange::new(start, entry.end), s.ctx))
+            let start = idx.checked_sub(1).map_or(TextSize::new(0), |prev| self.ends[prev]);
+            Some((TextRange::new(start, end), s.ctx))
         })
     }
 
@@ -187,44 +266,39 @@ impl SpanMap {
         &self,
         span: Span,
     ) -> impl Iterator<Item = (TextRange, SyntaxContext)> + '_ {
-        self.spans.iter().copied().enumerate().filter_map(move |(idx, entry)| {
-            let s = self.span(idx, entry);
+        self.ends.iter().copied().enumerate().filter_map(move |(idx, end)| {
+            let s = self.span(idx);
             if s.anchor != span.anchor {
                 return None;
             }
             if !s.range.contains_range(span.range) {
                 return None;
             }
-            let start = idx.checked_sub(1).map_or(TextSize::new(0), |prev| self.spans[prev].end);
-            Some((TextRange::new(start, entry.end), s.ctx))
+            let start = idx.checked_sub(1).map_or(TextSize::new(0), |prev| self.ends[prev]);
+            Some((TextRange::new(start, end), s.ctx))
         })
     }
 
     /// Returns the span at the given position.
     pub fn span_at(&self, offset: TextSize) -> Span {
-        let index = self.spans.partition_point(|entry| entry.end <= offset);
-        self.span(index, self.spans[index])
+        let index = self.ends.partition_point(|&end| end <= offset);
+        self.span(index)
     }
 
     /// Returns the spans associated with the given range.
     /// In other words, this will return all spans that correspond to all offsets within the given range.
     pub fn spans_for_range(&self, range: TextRange) -> impl Iterator<Item = Span> + '_ {
         let (start, end) = (range.start(), range.end());
-        let start_entry = self.spans.partition_point(|entry| entry.end <= start);
-        let end_entry = self.spans[start_entry..].partition_point(|entry| entry.end <= end); // FIXME: this might be wrong?
-        self.spans[start_entry..][..end_entry]
+        let start_entry = self.ends.partition_point(|&entry_end| entry_end <= start);
+        let end_entry = self.ends[start_entry..].partition_point(|&entry_end| entry_end <= end); // FIXME: this might be wrong?
+        self.ends[start_entry..][..end_entry]
             .iter()
-            .copied()
             .enumerate()
-            .map(move |(index, entry)| self.span(start_entry + index, entry))
+            .map(move |(index, _)| self.span(start_entry + index))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (TextSize, Span)> + '_ {
-        self.spans
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, entry)| (entry.end, self.span(index, entry)))
+        self.ends.iter().copied().enumerate().map(|(index, end)| (end, self.span(index)))
     }
 
     /// Merges this span map with another span map, where `other` is inserted at (and replaces) `other_range`.
@@ -252,31 +326,34 @@ impl SpanMap {
         //   1   3   5   6   8   12    15    16    <-- final offsets we store
         // 0-1 1-3 3-5 5-6 6-8 8-12 12-15 15-16    <-- final ranges
 
-        let replace_start = self.spans.partition_point(|entry| entry.end <= other_range.start());
-        let replace_end = self.spans.partition_point(|entry| entry.end <= other_range.end());
-        for entry in &mut self.spans[replace_end..] {
-            entry.end += other_size;
-            entry.end -= other_range.len();
+        let replace_start = self.ends.partition_point(|&end| end <= other_range.start());
+        let replace_end = self.ends.partition_point(|&end| end <= other_range.end());
+        for end in &mut self.ends[replace_end..] {
+            *end += other_size;
+            *end -= other_range.len();
         }
 
-        let mut entries = Vec::with_capacity(other.spans.len());
-        let mut base_indices = Vec::with_capacity(other.spans.len());
+        let mut ends = Vec::with_capacity(other.ends.len());
+        let mut ranges = Vec::with_capacity(other.ends.len());
+        let mut base_indices = Vec::with_capacity(other.ends.len());
         for (offset, span) in other.iter() {
-            let (entry, base) = self.entry(offset + other_range.start(), span);
-            entries.push(entry);
+            let base = self.base_index(span);
+            ends.push(offset + other_range.start());
+            ranges.push(span.range);
             base_indices.push(base);
         }
-        self.spans.splice(replace_start..replace_end, entries);
+        self.ends.splice(replace_start..replace_end, ends);
+        self.ranges.replace_range(replace_start..replace_end, ranges);
         self.base_indices.replace_range(replace_start..replace_end, base_indices);
 
         // Matched arm info is no longer correct once we have multiple macros.
         self.matched_arm = None;
     }
 
-    fn entry(&mut self, end: TextSize, span: Span) -> (SpanMapEntry, u32) {
+    fn base_index(&mut self, span: Span) -> u32 {
         let base = SpanMapBase { anchor: span.anchor, ctx: span.ctx };
         let base = self
-            .spans
+            .ends
             .len()
             .checked_sub(1)
             .map(|index| self.base_indices.get(index))
@@ -287,25 +364,26 @@ impl SpanMap {
                 self.bases.push(base);
                 index
             });
-        let base = u32::try_from(base).expect("span map has more than u32::MAX distinct bases");
-        (SpanMapEntry { end, range: span.range }, base)
+        u32::try_from(base).expect("span map has more than u32::MAX distinct bases")
     }
 
-    fn span(&self, index: usize, entry: SpanMapEntry) -> Span {
+    fn span(&self, index: usize) -> Span {
         let base = self.bases[self.base_indices.get(index)];
-        Span { range: entry.range, anchor: base.anchor, ctx: base.ctx }
+        Span { range: self.ranges.get(index), anchor: base.anchor, ctx: base.ctx }
     }
 }
 
 #[cfg(not(no_salsa_async_drops))]
 impl Drop for SpanMap {
     fn drop(&mut self) {
-        let spans = std::mem::take(&mut self.spans);
+        let ends = std::mem::take(&mut self.ends);
+        let ranges = std::mem::replace(&mut self.ranges, SpanMapRanges::new());
         let base_indices = std::mem::replace(&mut self.base_indices, SpanMapBaseIndices::new());
         let bases = std::mem::take(&mut self.bases);
         static SPAN_MAP_DROP_THREAD: std::sync::OnceLock<
             std::sync::mpsc::Sender<(
-                Vec<SpanMapEntry>,
+                Vec<TextSize>,
+                SpanMapRanges,
                 SpanMapBaseIndices,
                 SmallVec<[SpanMapBase; 2]>,
             )>,
@@ -314,7 +392,8 @@ impl Drop for SpanMap {
         SPAN_MAP_DROP_THREAD
             .get_or_init(|| {
                 let (sender, receiver) = std::sync::mpsc::channel::<(
-                    Vec<SpanMapEntry>,
+                    Vec<TextSize>,
+                    SpanMapRanges,
                     SpanMapBaseIndices,
                     SmallVec<[SpanMapBase; 2]>,
                 )>();
@@ -335,7 +414,7 @@ impl Drop for SpanMap {
                     .unwrap();
                 sender
             })
-            .send((spans, base_indices, bases))
+            .send((ends, ranges, base_indices, bases))
             .unwrap();
     }
 }
@@ -405,7 +484,7 @@ mod tests {
 
     #[test]
     fn repeated_span_bases_use_compact_storage() {
-        assert_eq!(std::mem::size_of::<SpanMapEntry>(), 12);
+        assert_eq!(std::mem::size_of::<PackedTextRange>(), 4);
 
         let anchor = SpanAnchor {
             file_id: EditionedFileId::current_edition(FileId::from_raw(0)),
@@ -425,6 +504,7 @@ mod tests {
 
         assert_eq!(map.bases.len(), 1);
         assert!(matches!(map.base_indices, SpanMapBaseIndices::Compact(_)));
+        assert!(matches!(map.ranges, SpanMapRanges::Compact(_)));
         assert_eq!(
             map.iter().collect::<Vec<_>>(),
             [(1.into(), spans[0]), (3.into(), spans[1]), (6.into(), spans[2])]
@@ -451,6 +531,29 @@ mod tests {
             std::hash::Hasher::finish(&hasher)
         };
         assert_eq!(hash(&with_unused_base), hash(&map));
+    }
+
+    #[test]
+    fn wide_span_ranges_promote_without_changing_spans() {
+        let anchor = SpanAnchor {
+            file_id: EditionedFileId::current_edition(FileId::from_raw(0)),
+            ast_id: ROOT_ERASED_FILE_AST_ID,
+        };
+        let ctx = SyntaxContext::root(Edition::CURRENT);
+        let spans = [
+            Span { range: TextRange::new(1.into(), 2.into()), anchor, ctx },
+            Span {
+                range: TextRange::new((1 << 18).into(), ((1 << 18) + (1 << 13)).into()),
+                anchor,
+                ctx,
+            },
+        ];
+        let mut map = SpanMap::empty();
+        map.push(1.into(), spans[0]);
+        map.push(2.into(), spans[1]);
+
+        assert!(matches!(map.ranges, SpanMapRanges::Wide(_)));
+        assert_eq!(map.iter().collect::<Vec<_>>(), [(1.into(), spans[0]), (2.into(), spans[1])]);
     }
 
     #[test]
