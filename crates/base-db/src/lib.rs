@@ -221,48 +221,23 @@ pub struct FileText {
     pub file_id: vfs::FileId,
 }
 
-#[salsa::tracked]
 impl FileText {
-    #[salsa::tracked(lru = 128, returns(ref))]
-    pub fn text(self, db: &dyn SourceDatabase) -> Arc<str> {
+    pub fn text(self, db: &dyn SourceDatabase) -> &Arc<str> {
         self.storage(db).text()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
-pub struct FileTextStorage(FileTextStorageKind);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum FileTextStorageKind {
-    Plain(Arc<str>),
-    Compressed(Arc<[u8]>),
-}
+pub struct FileTextStorage(Arc<str>);
 
 impl FileTextStorage {
-    fn new(text: &str, durability: Durability) -> FileTextStorage {
-        if durability != Durability::HIGH {
-            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
-        }
-
-        let compressed = lz4_flex::compress_prepend_size(text.as_bytes());
-        if text.len() <= compressed.len() {
-            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
-        }
-        FileTextStorage(FileTextStorageKind::Compressed(Arc::from(compressed)))
+    fn new(text: &str, _durability: Durability) -> FileTextStorage {
+        FileTextStorage(Arc::from(text))
     }
 
-    fn text(&self) -> Arc<str> {
-        match &self.0 {
-            FileTextStorageKind::Plain(text) => Arc::clone(text),
-            FileTextStorageKind::Compressed(bytes) => {
-                let bytes = lz4_flex::decompress_size_prepended(bytes)
-                    .expect("internally compressed file text must be valid");
-                let text = String::from_utf8(bytes)
-                    .expect("internally compressed file text must be UTF-8");
-                Arc::from(text.as_str())
-            }
-        }
+    fn text(&self) -> &Arc<str> {
+        &self.0
     }
 }
 
@@ -485,13 +460,17 @@ impl DbPanicContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{Durability, FileTextStorage, FileTextStorageKind};
+    use super::{Durability, FileTextStorage};
+    use triomphe::Arc;
 
     #[test]
-    fn high_durability_file_text_is_compressed() {
+    fn high_durability_file_text_reuses_storage() {
         let text = "pub fn repeated() {}\n".repeat(1024);
         let storage = FileTextStorage::new(&text, Durability::HIGH);
+        let first = storage.text();
+        let second = storage.text();
 
-        assert!(matches!(storage.0, FileTextStorageKind::Compressed(_)));
+        assert_eq!(&**first, text);
+        assert!(Arc::ptr_eq(first, second));
     }
 }

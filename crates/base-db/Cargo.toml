@@ -22,7 +22,6 @@ triomphe.workspace = true
 semver.workspace = true
 tracing.workspace = true
 indexmap.workspace = true
-lz4_flex.workspace = true
 
 # local deps
 cfg.workspace = true
