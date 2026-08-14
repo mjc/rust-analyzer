@@ -27,7 +27,6 @@ use std::{
     marker::PhantomData,
 };
 
-use la_arena::{Arena, Idx, RawIdx};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use smallvec::SmallVec;
 use syntax::{
@@ -597,27 +596,114 @@ register_assoc_item_ast_id! {
 impl AstIdNode for ast::MacroCall {}
 
 /// Maps items' `SyntaxNode`s to `ErasedFileAstId`s and back.
-#[derive(Default)]
 pub struct AstIdMap {
-    /// An arena of the ptrs and their associated ID.
-    arena: Arena<(SyntaxNodePtr, ErasedFileAstId)>,
-    /// Map ptr to id.
-    ptr_map: hashbrown::HashTable<ArenaId>,
-    /// Map id to ptr.
-    id_map: hashbrown::HashTable<ArenaId>,
+    /// Sorted by the reconstructed syntax-node pointer.
+    entries: Box<[AstIdMapEntry]>,
+    /// Indices into `entries`, sorted by AST ID.
+    id_index: AstIdMapIndex,
+    /// Unlike every allocated item, the root's AST ID does not encode its syntax kind.
+    root_kind: SyntaxKind,
 }
 
-type ArenaId = Idx<(SyntaxNodePtr, ErasedFileAstId)>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AstIdMapEntry {
+    range: TextRange,
+    /// Also encodes the syntax kind for every non-root entry.
+    ast_id: ErasedFileAstId,
+}
+
+impl AstIdMapEntry {
+    fn new(ptr: SyntaxNodePtr, ast_id: ErasedFileAstId) -> Self {
+        debug_assert!(
+            ast_id.is_root()
+                || ast_id.kind_typed().and_then(ErasedFileAstIdKind::syntax_kind)
+                    == Some(ptr.kind())
+        );
+        Self { range: ptr.text_range(), ast_id }
+    }
+
+    fn ptr(self, root_kind: SyntaxKind) -> SyntaxNodePtr {
+        let kind = if self.ast_id.is_root() {
+            root_kind
+        } else {
+            self.ast_id
+                .kind_typed()
+                .and_then(ErasedFileAstIdKind::syntax_kind)
+                .expect("AstIdMap entry has no syntax kind")
+        };
+        SyntaxNodePtr::from_kind_and_range(kind, self.range)
+    }
+
+    fn ptr_key(self, root_kind: SyntaxKind) -> (u32, u32, u16) {
+        syntax_node_ptr_key(self.ptr(root_kind))
+    }
+}
+
+fn syntax_node_ptr_key(ptr: SyntaxNodePtr) -> (u32, u32, u16) {
+    (ptr.text_range().start().into(), ptr.text_range().end().into(), ptr.kind() as u16)
+}
+
+enum AstIdMapIndex {
+    Compact(Box<[u16]>),
+    Wide(Box<[u32]>),
+}
+
+impl AstIdMapIndex {
+    fn new(entries: &[AstIdMapEntry]) -> Self {
+        let mut indices = (0..entries.len())
+            .map(|index| u32::try_from(index).expect("AstIdMap has more than u32::MAX entries"))
+            .collect::<Vec<_>>();
+        indices.sort_unstable_by_key(|&index| entries[index as usize].ast_id.0);
+        Self::from_indices(indices)
+    }
+
+    fn from_indices(indices: Vec<u32>) -> Self {
+        if indices.iter().all(|&index| u16::try_from(index).is_ok()) {
+            Self::Compact(indices.into_iter().map(|index| u16::try_from(index).unwrap()).collect())
+        } else {
+            Self::Wide(indices.into_boxed_slice())
+        }
+    }
+
+    fn find(&self, id: ErasedFileAstId, entries: &[AstIdMapEntry]) -> Option<usize> {
+        match self {
+            Self::Compact(indices) => indices
+                .binary_search_by_key(&id.0, |&index| entries[usize::from(index)].ast_id.0)
+                .ok()
+                .map(|index| usize::from(indices[index])),
+            Self::Wide(indices) => indices
+                .binary_search_by_key(&id.0, |&index| entries[index as usize].ast_id.0)
+                .ok()
+                .map(|index| indices[index] as usize),
+        }
+    }
+}
+
+impl Default for AstIdMapIndex {
+    fn default() -> Self {
+        Self::Compact(Box::default())
+    }
+}
+
+impl Default for AstIdMap {
+    fn default() -> Self {
+        Self {
+            entries: Box::default(),
+            id_index: AstIdMapIndex::default(),
+            root_kind: SyntaxKind::TOMBSTONE,
+        }
+    }
+}
 
 impl fmt::Debug for AstIdMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AstIdMap").field("arena", &self.arena).finish()
+        f.debug_struct("AstIdMap").field("entries", &self.entries).finish()
     }
 }
 
 impl PartialEq for AstIdMap {
     fn eq(&self, other: &Self) -> bool {
-        self.arena == other.arena
+        self.root_kind == other.root_kind && self.entries == other.entries
     }
 }
 impl Eq for AstIdMap {}
@@ -641,11 +727,12 @@ enum GreenWalkEvent {
 impl AstIdMap {
     pub fn from_source(node: &SyntaxNode) -> AstIdMap {
         assert!(node.parent().is_none());
-        let mut res = AstIdMap::default();
         let mut index_map = ErasedAstIdNextIndexMap::default();
 
         // Ensure we allocate the root.
-        res.arena.alloc((SyntaxNodePtr::new(node), ROOT_ERASED_FILE_AST_ID));
+        let root = SyntaxNodePtr::new(node);
+        let root_kind = root.kind();
+        let mut entries = vec![AstIdMapEntry::new(root, ROOT_ERASED_FILE_AST_ID)];
 
         // By walking the tree in breadth-first order we make sure that parents
         // get lower ids then children. That is, adding a new child does not
@@ -665,11 +752,9 @@ impl AstIdMap {
         // After all, the block will then contain the *outer* item, so we allocate
         // an ID for it anyway.
         let mut blocks: SmallVec<[(TextRange, ContainsItems); 4]> = SmallVec::new();
-        let mut curr_layer: SmallVec<[(GreenNode, TextRange, Option<ArenaId>); 32]> =
-            SmallVec::new();
+        let mut curr_layer: SmallVec<[(GreenNode, TextRange, Option<u32>); 32]> = SmallVec::new();
         curr_layer.push((node.green().to_owned(), node.text_range(), None));
-        let mut next_layer: SmallVec<[(GreenNode, TextRange, Option<ArenaId>); 32]> =
-            SmallVec::new();
+        let mut next_layer: SmallVec<[(GreenNode, TextRange, Option<u32>); 32]> = SmallVec::new();
         while !curr_layer.is_empty() {
             for (layer_root, layer_range, parent_idx) in curr_layer.drain(..) {
                 let mut walk_stack: SmallVec<[GreenWalkEvent; 64]> = SmallVec::new();
@@ -732,17 +817,17 @@ impl AstIdMap {
                                             || kind == SyntaxKind::STMT_LIST
                                     })))
                         {
-                            let parent = parent_of(parent_idx, &res);
+                            let parent = parent_of(parent_idx, &entries);
                             let block_ast_id = block_expr_ast_id(&mut index_map, parent);
                             let block_ptr = SyntaxNodePtr::from_kind_and_range(
                                 SyntaxKind::BLOCK_EXPR,
                                 *last_block_range,
                             );
-                            res.arena.alloc((block_ptr, block_ast_id));
+                            alloc(&mut entries, block_ptr, block_ast_id);
                             *already_allocated = ContainsItems::Yes;
                         }
 
-                        let parent = parent_of(parent_idx, &res);
+                        let parent = parent_of(parent_idx, &entries);
                         let Some(ast_id) =
                             ErasedFileAstId::ast_id_for_green(&green, &mut index_map, parent)
                         else {
@@ -750,7 +835,7 @@ impl AstIdMap {
                             continue;
                         };
                         let ptr = SyntaxNodePtr::from_kind_and_range(syntax_kind, range);
-                        let idx = res.arena.alloc((ptr, ast_id));
+                        let idx = alloc(&mut entries, ptr, ast_id);
 
                         next_layer.push((green, range, Some(idx)));
                         continue;
@@ -775,37 +860,26 @@ impl AstIdMap {
             assert!(blocks.is_empty(), "didn't leave all BlockExprs");
         }
 
-        res.ptr_map = hashbrown::HashTable::with_capacity(res.arena.len());
-        res.id_map = hashbrown::HashTable::with_capacity(res.arena.len());
-        for (idx, (ptr, ast_id)) in res.arena.iter() {
-            let ptr_hash = hash_ptr(ptr);
-            let ast_id_hash = hash_ast_id(ast_id);
-            match res.ptr_map.entry(
-                ptr_hash,
-                |idx2| *idx2 == idx,
-                |&idx| hash_ptr(&res.arena[idx].0),
-            ) {
-                hashbrown::hash_table::Entry::Occupied(_) => unreachable!(),
-                hashbrown::hash_table::Entry::Vacant(entry) => {
-                    entry.insert(idx);
-                }
-            }
-            match res.id_map.entry(
-                ast_id_hash,
-                |idx2| *idx2 == idx,
-                |&idx| hash_ast_id(&res.arena[idx].1),
-            ) {
-                hashbrown::hash_table::Entry::Occupied(_) => unreachable!(),
-                hashbrown::hash_table::Entry::Vacant(entry) => {
-                    entry.insert(idx);
-                }
-            }
-        }
-        res.arena.shrink_to_fit();
-        return res;
+        entries.sort_unstable_by_key(|entry| entry.ptr_key(root_kind));
+        let id_index = AstIdMapIndex::new(&entries);
+        return AstIdMap { entries: entries.into_boxed_slice(), id_index, root_kind };
 
-        fn parent_of(parent_idx: Option<ArenaId>, res: &AstIdMap) -> Option<&ErasedFileAstId> {
-            let mut parent = parent_idx.map(|parent_idx| &res.arena[parent_idx].1);
+        fn alloc(
+            entries: &mut Vec<AstIdMapEntry>,
+            ptr: SyntaxNodePtr,
+            ast_id: ErasedFileAstId,
+        ) -> u32 {
+            let index =
+                u32::try_from(entries.len()).expect("AstIdMap has more than u32::MAX entries");
+            entries.push(AstIdMapEntry::new(ptr, ast_id));
+            index
+        }
+
+        fn parent_of(
+            parent_idx: Option<u32>,
+            entries: &[AstIdMapEntry],
+        ) -> Option<&ErasedFileAstId> {
+            let mut parent = parent_idx.map(|parent_idx| &entries[parent_idx as usize].ast_id);
             if parent.is_some_and(|parent| parent.kind() == ErasedFileAstIdKind::ExternBlock as u32)
             {
                 // See the comment on `ErasedAssocItemFileAstId` for why is this.
@@ -827,7 +901,7 @@ impl AstIdMap {
 
     /// The root node.
     pub fn root(&self) -> SyntaxNodePtr {
-        self.arena[Idx::from_raw(RawIdx::from_u32(0))].0
+        self.get_erased(ROOT_ERASED_FILE_AST_ID)
     }
 
     pub fn ast_id<N: AstIdNode>(&self, item: &N) -> FileAstId<N> {
@@ -862,15 +936,20 @@ impl AstIdMap {
             panic!(
                 "Can't find SyntaxNodePtr {:?} in AstIdMap:\n{:?}",
                 ptr,
-                self.arena.iter().map(|(_id, i)| i).collect::<Vec<_>>(),
+                self.entries
+                    .iter()
+                    .copied()
+                    .map(|entry| (entry.ptr(self.root_kind), entry.ast_id))
+                    .collect::<Vec<_>>(),
             )
         })
     }
 
     fn try_erased_ast_id(&self, ptr: SyntaxNodePtr) -> Option<ErasedFileAstId> {
-        let hash = hash_ptr(&ptr);
-        let idx = *self.ptr_map.find(hash, |&idx| self.arena[idx].0 == ptr)?;
-        Some(self.arena[idx].1)
+        let key = syntax_node_ptr_key(ptr);
+        let index =
+            self.entries.binary_search_by_key(&key, |entry| entry.ptr_key(self.root_kind)).ok()?;
+        Some(self.entries[index].ast_id)
     }
 
     // Don't bound on `AstIdNode` here, because `BlockExpr`s are also valid here (`ast::BlockExpr`
@@ -883,13 +962,16 @@ impl AstIdMap {
     }
 
     pub fn get_erased(&self, id: ErasedFileAstId) -> SyntaxNodePtr {
-        let hash = hash_ast_id(&id);
-        match self.id_map.find(hash, |&idx| self.arena[idx].1 == id) {
-            Some(&idx) => self.arena[idx].0,
+        match self.id_index.find(id, &self.entries) {
+            Some(index) => self.entries[index].ptr(self.root_kind),
             None => panic!(
                 "Can't find ast id {:?} in AstIdMap:\n{:?}",
                 id,
-                self.arena.iter().map(|(_id, i)| i).collect::<Vec<_>>(),
+                self.entries
+                    .iter()
+                    .copied()
+                    .map(|entry| (entry.ptr(self.root_kind), entry.ast_id))
+                    .collect::<Vec<_>>(),
             ),
         }
     }
@@ -898,23 +980,15 @@ impl AstIdMap {
 #[cfg(not(no_salsa_async_drops))]
 impl Drop for AstIdMap {
     fn drop(&mut self) {
-        let arena = std::mem::take(&mut self.arena);
-        let ptr_map = std::mem::take(&mut self.ptr_map);
-        let id_map = std::mem::take(&mut self.id_map);
+        let entries = std::mem::take(&mut self.entries);
+        let id_index = std::mem::take(&mut self.id_index);
         static AST_ID_MAP_DROP_THREAD: std::sync::OnceLock<
-            std::sync::mpsc::Sender<(
-                Arena<(SyntaxNodePtr, ErasedFileAstId)>,
-                hashbrown::HashTable<ArenaId>,
-                hashbrown::HashTable<ArenaId>,
-            )>,
+            std::sync::mpsc::Sender<(Box<[AstIdMapEntry]>, AstIdMapIndex)>,
         > = std::sync::OnceLock::new();
         AST_ID_MAP_DROP_THREAD
             .get_or_init(|| {
-                let (sender, receiver) = std::sync::mpsc::channel::<(
-                    Arena<(SyntaxNodePtr, ErasedFileAstId)>,
-                    hashbrown::HashTable<ArenaId>,
-                    hashbrown::HashTable<ArenaId>,
-                )>();
+                let (sender, receiver) =
+                    std::sync::mpsc::channel::<(Box<[AstIdMapEntry]>, AstIdMapIndex)>();
                 std::thread::Builder::new()
                     .name("AstIdMapDropper".to_owned())
                     .spawn(move || {
@@ -932,19 +1006,9 @@ impl Drop for AstIdMap {
                     .unwrap();
                 sender
             })
-            .send((arena, ptr_map, id_map))
+            .send((entries, id_index))
             .unwrap();
     }
-}
-
-#[inline]
-fn hash_ptr(ptr: &SyntaxNodePtr) -> u64 {
-    FxBuildHasher.hash_one(ptr)
-}
-
-#[inline]
-fn hash_ast_id(ptr: &ErasedFileAstId) -> u64 {
-    FxBuildHasher.hash_one(ptr)
 }
 
 #[cfg(test)]
@@ -952,9 +1016,22 @@ mod tests {
     use syntax::{AstNode, Edition, SourceFile, SyntaxKind, SyntaxNodePtr, WalkEvent, ast};
 
     use super::{
-        AstIdMap, ErasedAstIdNextIndexMap, ErasedFileAstIdKind, ImplFileAstId, impl_ast_id,
-        macro_call_name,
+        AstIdMap, AstIdMapEntry, AstIdMapIndex, ErasedAstIdNextIndexMap, ErasedFileAstIdKind,
+        ImplFileAstId, impl_ast_id, macro_call_name,
     };
+
+    #[test]
+    fn ast_id_map_uses_compact_exact_indices() {
+        assert_eq!(std::mem::size_of::<AstIdMapEntry>(), 12);
+        assert!(matches!(
+            AstIdMapIndex::from_indices(vec![0, u16::MAX as u32]),
+            AstIdMapIndex::Compact(_)
+        ));
+        assert!(matches!(
+            AstIdMapIndex::from_indices(vec![0, u16::MAX as u32 + 1]),
+            AstIdMapIndex::Wide(_)
+        ));
+    }
 
     #[test]
     fn check_all_nodes() {
