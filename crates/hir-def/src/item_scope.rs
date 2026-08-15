@@ -147,8 +147,31 @@ impl From<ScopeImportOrGlob> for ImportOrGlob {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScopeValuesItem {
     def: ModuleDefId,
-    vis: Visibility,
+    vis: ScopeVisibility,
     import: Option<ScopeImportOrGlob>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeVisibility(u32);
+
+impl ScopeVisibility {
+    const PUBLIC: Self = Self(u32::MAX);
+
+    fn new(visibility: Visibility, visibilities: &mut ThinVec<Visibility>) -> Self {
+        if visibility == Visibility::Public {
+            return Self::PUBLIC;
+        }
+        let index =
+            visibilities.iter().position(|&stored| stored == visibility).unwrap_or_else(|| {
+                visibilities.push(visibility);
+                visibilities.len() - 1
+            });
+        Self(u32::try_from(index).expect("ItemScope has more than u32::MAX visibilities"))
+    }
+
+    fn get(self, visibilities: &[Visibility]) -> Visibility {
+        if self == Self::PUBLIC { Visibility::Public } else { visibilities[self.0 as usize] }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,38 +233,43 @@ impl From<ScopeImportOrExternCrate> for ImportOrExternCrate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScopeTypesItem {
     def: ModuleDefId,
-    vis: Visibility,
+    vis: ScopeVisibility,
     import: Option<ScopeImportOrExternCrate>,
 }
 
-impl From<ValuesItem> for ScopeValuesItem {
-    fn from(item: ValuesItem) -> Self {
-        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+impl ScopeValuesItem {
+    fn new(item: ValuesItem, vis: ScopeVisibility) -> Self {
+        Self { def: item.def, vis, import: item.import.map(Into::into) }
+    }
+
+    fn get(self, visibilities: &[Visibility]) -> ValuesItem {
+        ValuesItem {
+            def: self.def,
+            vis: self.vis.get(visibilities),
+            import: self.import.map(Into::into),
+        }
     }
 }
 
-impl From<ScopeValuesItem> for ValuesItem {
-    fn from(item: ScopeValuesItem) -> Self {
-        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+impl ScopeTypesItem {
+    fn new(item: TypesItem, vis: ScopeVisibility) -> Self {
+        Self { def: item.def, vis, import: item.import.map(Into::into) }
     }
-}
 
-impl From<TypesItem> for ScopeTypesItem {
-    fn from(item: TypesItem) -> Self {
-        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
-    }
-}
-
-impl From<ScopeTypesItem> for TypesItem {
-    fn from(item: ScopeTypesItem) -> Self {
-        Self { def: item.def, vis: item.vis, import: item.import.map(Into::into) }
+    fn get(self, visibilities: &[Visibility]) -> TypesItem {
+        TypesItem {
+            def: self.def,
+            vis: self.vis.get(visibilities),
+            import: self.import.map(Into::into),
+        }
     }
 }
 
 const _: () = assert!(std::mem::size_of::<ScopeImportOrGlob>() == 12);
-const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 40);
+const _: () = assert!(std::mem::size_of::<ScopeVisibility>() == 4);
+const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 32);
 const _: () = assert!(std::mem::size_of::<ScopeImportOrExternCrate>() == 12);
-const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 40);
+const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 32);
 
 impl PerNsGlobImports {
     pub(crate) fn contains_type(&self, module_id: ModuleId, name: Name) -> bool {
@@ -263,6 +291,8 @@ pub struct ItemScope {
     types: FxIndexMap<Name, ScopeTypesItem>,
     values: FxIndexMap<Name, ScopeValuesItem>,
     macros: FxIndexMap<Name, MacrosItem>,
+    /// Deduplicated visibilities referenced by type and value entries.
+    visibilities: ThinVec<Visibility>,
     unresolved: FxHashSet<Name>,
 
     /// The defs declared in this scope. Each def has a single scope where it is
@@ -308,15 +338,68 @@ pub struct ItemScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::visibility::VisibilityExplicitness;
 
     #[test]
     fn values_scope_entry_is_compact() {
-        assert_eq!(std::mem::size_of::<ScopeValuesItem>(), 40);
+        assert_eq!(std::mem::size_of::<ScopeValuesItem>(), 32);
     }
 
     #[test]
     fn type_scope_entry_is_compact() {
-        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 40);
+        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 32);
+    }
+
+    #[test]
+    fn scope_visibilities_roundtrip_and_deduplicate() {
+        let krate = Crate::from_id(salsa::Id::from_bits(1));
+        let module = ModuleId::from_id(salsa::Id::from_bits(2));
+        let visibilities = [
+            Visibility::Public,
+            Visibility::PubCrate(krate),
+            Visibility::Module(module, VisibilityExplicitness::Implicit),
+            Visibility::Module(module, VisibilityExplicitness::Explicit),
+        ];
+        let mut stored = ThinVec::new();
+
+        for visibility in visibilities {
+            let first = ScopeVisibility::new(visibility, &mut stored);
+            let second = ScopeVisibility::new(visibility, &mut stored);
+            assert_eq!(first, second);
+            assert_eq!(first.get(&stored), visibility);
+        }
+        assert_eq!(stored.len(), 3, "public visibility should not need an arena entry");
+    }
+
+    #[test]
+    fn shrinking_scope_normalizes_visibility_storage() {
+        let krate = Crate::from_id(salsa::Id::from_bits(1));
+        let module = ModuleId::from_id(salsa::Id::from_bits(2));
+        let type_vis = Visibility::PubCrate(krate);
+        let value_vis = Visibility::Module(module, VisibilityExplicitness::Explicit);
+        let mut first = ItemScope::default();
+        let mut second = ItemScope::default();
+
+        for (scope, reverse_intern_order) in [(&mut first, false), (&mut second, true)] {
+            if reverse_intern_order {
+                scope.intern_visibility(value_vis);
+            }
+            let type_id = scope.intern_visibility(type_vis);
+            let value_id = scope.intern_visibility(value_vis);
+            let def = ModuleDefId::ModuleId(module);
+            scope.types.insert(
+                Name::missing(),
+                ScopeTypesItem::new(TypesItem { def, vis: type_vis, import: None }, type_id),
+            );
+            scope.values.insert(
+                Name::missing(),
+                ScopeValuesItem::new(ValuesItem { def, vis: value_vis, import: None }, value_id),
+            );
+        }
+
+        first.shrink_to_fit();
+        second.shrink_to_fit();
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -367,6 +450,10 @@ pub(crate) enum BuiltinShadowMode {
 /// Legacy macros can only be accessed through special methods like `get_legacy_macros`.
 /// Other methods will only resolve values, types and module scoped macros only.
 impl ItemScope {
+    fn intern_visibility(&mut self, visibility: Visibility) -> ScopeVisibility {
+        ScopeVisibility::new(visibility, &mut self.visibilities)
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = (&Name, PerNs)> + '_ {
         // FIXME: shadowing
         self.types
@@ -380,13 +467,13 @@ impl ItemScope {
     }
 
     pub fn values(&self) -> impl Iterator<Item = (&Name, Item<ModuleDefId, ImportOrGlob>)> + '_ {
-        self.values.iter().map(|(name, &item)| (name, item.into()))
+        self.values.iter().map(|(name, &item)| (name, item.get(&self.visibilities)))
     }
 
     pub fn types(
         &self,
     ) -> impl Iterator<Item = (&Name, Item<ModuleDefId, ImportOrExternCrate>)> + '_ {
-        self.types.iter().map(|(name, &item)| (name, item.into()))
+        self.types.iter().map(|(name, &item)| (name, item.get(&self.visibilities)))
     }
 
     pub fn macros(&self) -> impl Iterator<Item = (&Name, Item<MacroId, ImportOrExternCrate>)> + '_ {
@@ -500,7 +587,7 @@ impl ItemScope {
 
     pub(crate) fn modules_in_scope(&self) -> impl Iterator<Item = (ModuleId, Visibility)> + '_ {
         self.types.values().filter_map(|ns| match ns.def {
-            ModuleDefId::ModuleId(module) => Some((module, ns.vis)),
+            ModuleDefId::ModuleId(module) => Some((module, ns.vis.get(&self.visibilities))),
             _ => None,
         })
     }
@@ -517,14 +604,14 @@ impl ItemScope {
     /// Get a name from current module scope, legacy macros are not included
     pub fn get(&self, name: &Name) -> PerNs {
         PerNs {
-            types: self.types.get(name).copied().map(Into::into),
-            values: self.values.get(name).copied().map(Into::into),
+            types: self.types.get(name).copied().map(|item| item.get(&self.visibilities)),
+            values: self.values.get(name).copied().map(|item| item.get(&self.visibilities)),
             macros: self.macros.get(name).copied(),
         }
     }
 
     pub(crate) fn type_(&self, name: &Name) -> Option<(ModuleDefId, Visibility)> {
-        self.types.get(name).map(|item| (item.def, item.vis))
+        self.types.get(name).map(|item| (item.def, item.vis.get(&self.visibilities)))
     }
 
     pub(crate) fn makro(&self, name: &Name) -> Option<MacroId> {
@@ -538,10 +625,18 @@ impl ItemScope {
                 (other_def.def == def).then_some((name, other_def.vis, other_def.import.is_none()))
             }),
             ItemInNs::Types(def) => self.types.iter().find_map(|(name, other_def)| {
-                (other_def.def == def).then_some((name, other_def.vis, other_def.import.is_none()))
+                (other_def.def == def).then_some((
+                    name,
+                    other_def.vis.get(&self.visibilities),
+                    other_def.import.is_none(),
+                ))
             }),
             ItemInNs::Values(def) => self.values.iter().find_map(|(name, other_def)| {
-                (other_def.def == def).then_some((name, other_def.vis, other_def.import.is_none()))
+                (other_def.def == def).then_some((
+                    name,
+                    other_def.vis.get(&self.visibilities),
+                    other_def.import.is_none(),
+                ))
             }),
         }
     }
@@ -570,7 +665,7 @@ impl ItemScope {
                 .filter_map(|(name, other_def)| {
                     (other_def.def == def).then_some((
                         name,
-                        other_def.vis,
+                        other_def.vis.get(&self.visibilities),
                         other_def.import.is_none(),
                     ))
                 })
@@ -581,7 +676,7 @@ impl ItemScope {
                 .filter_map(|(name, other_def)| {
                     (other_def.def == def).then_some((
                         name,
-                        other_def.vis,
+                        other_def.vis.get(&self.visibilities),
                         other_def.import.is_none(),
                     ))
                 })
@@ -763,6 +858,8 @@ impl ItemScope {
         // FIXME: Document and simplify this
 
         if let Some(mut fld) = def.types {
+            let vis = self.intern_visibility(fld.vis);
+            let visibilities = &self.visibilities;
             let existing = self.types.entry(lookup.1.clone());
             match existing {
                 Entry::Vacant(entry) => {
@@ -777,7 +874,7 @@ impl ItemScope {
                         self.use_imports_types
                             .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
-                    entry.insert(fld.into());
+                    entry.insert(ScopeTypesItem::new(fld, vis));
                     changed = true;
                 }
                 Entry::Occupied(mut entry) => {
@@ -793,7 +890,7 @@ impl ItemScope {
                             // A non-glob import either shadows a glob import of the same
                             // name, or re-resolves a stale binding it recorded earlier.
                             if glob_imports.types.remove(&lookup)
-                                || TypesItem::from(*entry.get()).is_reresolved_by(&fld.def, import)
+                                || entry.get().get(visibilities).is_reresolved_by(&fld.def, import)
                             {
                                 let prev = std::mem::replace(&mut fld.import, import);
                                 if let Some(import) = import {
@@ -803,7 +900,7 @@ impl ItemScope {
                                     );
                                 }
                                 cov_mark::hit!(import_shadowed);
-                                entry.insert(fld.into());
+                                entry.insert(ScopeTypesItem::new(fld, vis));
                                 changed = true;
                             }
                         }
@@ -813,6 +910,8 @@ impl ItemScope {
         }
 
         if let Some(mut fld) = def.values {
+            let vis = self.intern_visibility(fld.vis);
+            let visibilities = &self.visibilities;
             let existing = self.values.entry(lookup.1.clone());
             match existing {
                 Entry::Vacant(entry) => {
@@ -828,7 +927,7 @@ impl ItemScope {
                         self.use_imports_values
                             .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
-                    entry.insert(fld.into());
+                    entry.insert(ScopeValuesItem::new(fld, vis));
                     changed = true;
                 }
                 Entry::Occupied(mut entry)
@@ -836,7 +935,7 @@ impl ItemScope {
                 {
                     let import = import.and_then(ImportOrExternCrate::import_or_glob);
                     if glob_imports.values.remove(&lookup)
-                        || ValuesItem::from(*entry.get()).is_reresolved_by(&fld.def, import)
+                        || entry.get().get(visibilities).is_reresolved_by(&fld.def, import)
                     {
                         cov_mark::hit!(import_shadowed);
 
@@ -845,7 +944,7 @@ impl ItemScope {
                             self.use_imports_values
                                 .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                         }
-                        entry.insert(fld.into());
+                        entry.insert(ScopeValuesItem::new(fld, vis));
                         changed = true;
                     }
                 }
@@ -902,12 +1001,11 @@ impl ItemScope {
 
     /// Marks everything that is not a procedural macro as private to `this_module`.
     pub(crate) fn censor_non_proc_macros(&mut self, krate: Crate) {
-        self.types
-            .values_mut()
-            .map(|def| &mut def.vis)
-            .chain(self.values.values_mut().map(|def| &mut def.vis))
-            .chain(self.unnamed_trait_imports.iter_mut().map(|(_, def)| &mut def.vis))
-            .for_each(|vis| *vis = Visibility::PubCrate(krate));
+        let visibility = Visibility::PubCrate(krate);
+        let vis = self.intern_visibility(visibility);
+        self.types.values_mut().for_each(|def| def.vis = vis);
+        self.values.values_mut().for_each(|def| def.vis = vis);
+        self.unnamed_trait_imports.iter_mut().for_each(|(_, def)| def.vis = visibility);
 
         for mac in self.macros.values_mut() {
             if matches!(mac.def, MacroId::ProcMacroId(_) if mac.import.is_none()) {
@@ -989,11 +1087,22 @@ impl ItemScope {
     }
 
     pub(crate) fn shrink_to_fit(&mut self) {
+        let old_visibilities = std::mem::take(&mut self.visibilities);
+        for item in self.types.values_mut() {
+            item.vis =
+                ScopeVisibility::new(item.vis.get(&old_visibilities), &mut self.visibilities);
+        }
+        for item in self.values.values_mut() {
+            item.vis =
+                ScopeVisibility::new(item.vis.get(&old_visibilities), &mut self.visibilities);
+        }
+
         // Exhaustive match to require handling new fields.
         let Self {
             types,
             values,
             macros,
+            visibilities,
             unresolved,
             declarations,
             impls,
@@ -1015,6 +1124,7 @@ impl ItemScope {
         types.shrink_to_fit();
         values.shrink_to_fit();
         macros.shrink_to_fit();
+        visibilities.shrink_to_fit();
         use_imports_types.shrink_to_fit();
         use_imports_values.shrink_to_fit();
         use_imports_macros.shrink_to_fit();
@@ -1036,12 +1146,14 @@ impl ItemScope {
 // These methods are a temporary measure only meant to be used by `DefCollector::push_res_and_update_glob_vis()`.
 impl ItemScope {
     pub(crate) fn update_visibility_types(&mut self, name: &Name, vis: Visibility) {
+        let vis = self.intern_visibility(vis);
         let res =
             self.types.get_mut(name).expect("tried to update visibility of non-existent type");
         res.vis = vis;
     }
 
     pub(crate) fn update_visibility_values(&mut self, name: &Name, vis: Visibility) {
+        let vis = self.intern_visibility(vis);
         let res =
             self.values.get_mut(name).expect("tried to update visibility of non-existent value");
         res.vis = vis;
@@ -1054,12 +1166,14 @@ impl ItemScope {
     }
 
     pub(crate) fn update_def_types(&mut self, name: &Name, def: ModuleDefId, vis: Visibility) {
+        let vis = self.intern_visibility(vis);
         let res = self.types.get_mut(name).expect("tried to update def of non-existent type");
         res.def = def;
         res.vis = vis;
     }
 
     pub(crate) fn update_def_values(&mut self, name: &Name, def: ModuleDefId, vis: Visibility) {
+        let vis = self.intern_visibility(vis);
         let res = self.values.get_mut(name).expect("tried to update def of non-existent value");
         res.def = def;
         res.vis = vis;
