@@ -221,23 +221,56 @@ pub struct FileText {
     pub file_id: vfs::FileId,
 }
 
+#[salsa::tracked]
 impl FileText {
-    pub fn text(self, db: &dyn SourceDatabase) -> &Arc<str> {
+    #[salsa::tracked(lru = 128, returns(ref))]
+    pub fn text(self, db: &dyn SourceDatabase) -> Arc<str> {
         self.storage(db).text()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
-pub struct FileTextStorage(Arc<str>);
+pub struct FileTextStorage(FileTextStorageKind);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FileTextStorageKind {
+    Plain(Arc<str>),
+    Compressed(Arc<[u8]>),
+}
 
 impl FileTextStorage {
-    fn new(text: &str, _durability: Durability) -> FileTextStorage {
-        FileTextStorage(Arc::from(text))
+    fn new(text: &str, durability: Durability) -> FileTextStorage {
+        if durability != Durability::HIGH {
+            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
+        }
+
+        let compressed = lz4_flex::compress_prepend_size(text.as_bytes());
+        if text.len() <= compressed.len() {
+            return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
+        }
+        FileTextStorage(FileTextStorageKind::Compressed(Arc::from(compressed)))
     }
 
-    fn text(&self) -> &Arc<str> {
-        &self.0
+    fn text(&self) -> Arc<str> {
+        match &self.0 {
+            FileTextStorageKind::Plain(text) => Arc::clone(text),
+            FileTextStorageKind::Compressed(bytes) => {
+                let bytes = lz4_flex::decompress_size_prepended(bytes)
+                    .expect("internally compressed file text must be valid");
+                let text = String::from_utf8(bytes)
+                    .expect("internally compressed file text must be UTF-8");
+                Arc::from(text.as_str())
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn stored_len(&self) -> usize {
+        match &self.0 {
+            FileTextStorageKind::Plain(text) => text.len(),
+            FileTextStorageKind::Compressed(bytes) => bytes.len(),
+        }
     }
 }
 
@@ -464,13 +497,21 @@ mod tests {
     use triomphe::Arc;
 
     #[test]
-    fn high_durability_file_text_reuses_storage() {
+    fn low_durability_file_text_reuses_storage() {
         let text = "pub fn repeated() {}\n".repeat(1024);
-        let storage = FileTextStorage::new(&text, Durability::HIGH);
+        let storage = FileTextStorage::new(&text, Durability::LOW);
         let first = storage.text();
         let second = storage.text();
 
-        assert_eq!(&**first, text);
-        assert!(Arc::ptr_eq(first, second));
+        assert_eq!(&*first, text);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn high_durability_file_text_uses_less_storage() {
+        let text = "pub fn repeated() {}\n".repeat(1024);
+        let storage = FileTextStorage::new(&text, Durability::HIGH);
+
+        assert!(storage.stored_len() < text.len() / 2);
     }
 }
