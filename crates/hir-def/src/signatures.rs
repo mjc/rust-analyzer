@@ -465,7 +465,7 @@ pub struct ImplSignature {
 impl ImplSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: ImplId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        lower_impl_signature(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -473,28 +473,32 @@ impl ImplSignature {
         db: &dyn SourceDatabase,
         id: ImplId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
-        let loc = id.lookup(db);
-
-        let mut flags = ImplFlags::empty();
-        let src = loc.source(db);
-        if src.value.unsafe_token().is_some() {
-            flags.insert(ImplFlags::UNSAFE);
-        }
-        if src.value.excl_token().is_some() {
-            flags.insert(ImplFlags::NEGATIVE);
-        }
-        if src.value.default_token().is_some() {
-            flags.insert(ImplFlags::DEFAULT);
-        }
-
-        let (store, source_map, self_ty, target_trait, generic_params) =
-            crate::expr_store::lower::lower_impl(db, loc.container, src, id);
-
-        (
-            Arc::new(ImplSignature { store, generic_params, self_ty, target_trait, flags }),
-            source_map,
-        )
+        lower_impl_signature(db, id)
     }
+}
+
+fn lower_impl_signature(
+    db: &dyn SourceDatabase,
+    id: ImplId,
+) -> (Arc<ImplSignature>, ExpressionStoreSourceMap) {
+    let loc = id.lookup(db);
+
+    let mut flags = ImplFlags::empty();
+    let src = loc.source(db);
+    if src.value.unsafe_token().is_some() {
+        flags.insert(ImplFlags::UNSAFE);
+    }
+    if src.value.excl_token().is_some() {
+        flags.insert(ImplFlags::NEGATIVE);
+    }
+    if src.value.default_token().is_some() {
+        flags.insert(ImplFlags::DEFAULT);
+    }
+
+    let (store, source_map, self_ty, target_trait, generic_params) =
+        crate::expr_store::lower::lower_impl(db, loc.container, src, id);
+
+    (Arc::new(ImplSignature { store, generic_params, self_ty, target_trait, flags }), source_map)
 }
 
 impl ImplSignature {

@@ -1,12 +1,33 @@
 use base_db::SourceDatabase;
 use expect_test::Expect;
-use hir_def::{DefWithBodyId, ModuleDefId};
+use hir_def::{DefWithBodyId, ModuleDefId, signatures::ImplSignature};
 use salsa::EventKind;
 use test_fixture::WithFixture;
 
 use crate::{InferenceResult, method_resolution::TraitImpls, test_db::TestDB};
 
 use super::visit_module;
+
+#[test]
+fn impl_signature_without_source_map_does_not_build_source_map() {
+    let (db, file_id) = TestDB::with_single_file(
+        r#"
+struct S;
+impl S {}
+"#,
+    );
+
+    crate::attach_db(&db, || {
+        let module = db.module_for_file(file_id.file_id(&db));
+        let impl_id = module.def_map(&db)[module].scope.impls().next().unwrap();
+        let (executed, _) = db.log_executed(|| _ = ImplSignature::of(&db, impl_id));
+
+        assert!(
+            !executed.iter().any(|query| query.contains("ImplSignature::with_source_map_")),
+            "ImplSignature::of retained its source map: {executed:#?}"
+        );
+    });
+}
 
 #[test]
 fn typing_whitespace_inside_a_function_should_not_invalidate_types() {
@@ -630,7 +651,6 @@ fn main() {
                 "TraitImpls < 'db >::for_crate_",
                 "impl_trait_with_diagnostics",
                 "ImplSignature::of_",
-                "ImplSignature::with_source_map_",
                 "impl_self_ty_with_diagnostics",
                 "AttrFlags::query_",
                 "GenericPredicates::query_with_diagnostics_",
@@ -717,7 +737,6 @@ fn main() {
                 "GenericPredicates::query_with_diagnostics_",
                 "InherentImpls < 'db >::for_crate_",
                 "TraitImpls < 'db >::for_crate_",
-                "ImplSignature::with_source_map_",
                 "ImplSignature::of_",
                 "impl_trait_with_diagnostics",
                 "impl_self_ty_with_diagnostics",
