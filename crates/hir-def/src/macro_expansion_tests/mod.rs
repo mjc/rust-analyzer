@@ -50,6 +50,31 @@ use crate::{
     tt::TopSubtree,
 };
 
+#[test]
+fn macro_args_are_recomputed_after_lru_eviction() {
+    const CALL_COUNT: usize = 512 * 2 + 1;
+    let fixture =
+        format!("macro_rules! m {{ () => {{ struct S; }} }}\n{}", "m!();\n".repeat(CALL_COUNT));
+    let mut db = TestDB::with_files(&fixture);
+
+    let macro_calls = {
+        let def_map = crate_def_map(&db, db.fetch_test_crate());
+        def_map[def_map.root].scope.all_macro_calls().collect::<Vec<_>>()
+    };
+    assert_eq!(macro_calls.len(), CALL_COUNT);
+    let before = macro_calls[0].parse_macro_expansion(&db).value.0.syntax_node().to_string();
+
+    salsa::Database::trigger_lru_eviction(&mut db);
+    let executed = db.log_executed(|| {
+        for &macro_call in &macro_calls {
+            let after = macro_call.parse_macro_expansion(&db).value.0.syntax_node().to_string();
+            assert_eq!(after, before);
+        }
+    });
+
+    assert!(executed.iter().any(|query| query.contains("MacroCallId::macro_arg_")));
+}
+
 #[track_caller]
 fn check_errors(#[rust_analyzer::rust_fixture] ra_fixture: &str, expect: Expect) {
     crate::nameres::ENABLE_BUILTIN_DERIVE_FAST_PATH.set(false);
