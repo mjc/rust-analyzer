@@ -193,7 +193,7 @@ fn expand_subtree(
                 }));
             }
             Op::Subtree { tokens, delimiter } => {
-                let mut delimiter = *delimiter;
+                let mut delimiter = **delimiter;
                 marker(&mut delimiter.open);
                 marker(&mut delimiter.close);
                 let ExpandResult { value: (), err: e } =
@@ -284,7 +284,8 @@ fn expand_subtree(
                     kind: tt::LitKind::Integer,
                 }));
             }
-            Op::Concat { elements, span: concat_span } => {
+            Op::Concat { payload } => {
+                let crate::parser::ConcatOp { elements, span: concat_span } = &**payload;
                 let mut concatenated = String::new();
                 for element in elements {
                     match element {

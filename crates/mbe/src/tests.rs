@@ -11,6 +11,40 @@ use tt::{TextRange, TextSize};
 
 use crate::DeclarativeMacro;
 
+#[test]
+fn meta_template_op_is_compact() {
+    assert_eq!(std::mem::size_of::<crate::parser::Op>(), 40);
+}
+
+#[test]
+fn concat_inside_nested_subtrees_preserves_tokens_and_spans() {
+    check(
+        Edition::CURRENT,
+        Edition::CURRENT,
+        r#"
+($name:ident) => {
+    mod outer {
+        fn ${concat(prefix_, $name)}() {}
+    }
+};
+"#,
+        "item",
+        expect![[r#"
+            SUBTREE $$ 1:Root[0000, 0]@0..4#ROOT2024 1:Root[0000, 0]@0..4#ROOT2024
+              IDENT   mod 0:Root[0000, 0]@24..27#ROOT2024
+              IDENT   outer 0:Root[0000, 0]@28..33#ROOT2024
+              SUBTREE {} 0:Root[0000, 0]@34..35#ROOT2024 0:Root[0000, 0]@82..83#ROOT2024
+                IDENT   fn 0:Root[0000, 0]@44..46#ROOT2024
+                IDENT   prefix_item 0:Root[0000, 0]@49..55#ROOT2024
+                SUBTREE () 0:Root[0000, 0]@72..73#ROOT2024 0:Root[0000, 0]@73..74#ROOT2024
+                SUBTREE {} 0:Root[0000, 0]@75..76#ROOT2024 0:Root[0000, 0]@76..77#ROOT2024
+
+            mod outer {
+                fn prefix_item(){}
+            }"#]],
+    );
+}
+
 #[expect(deprecated)]
 fn check_(
     def_edition: Edition,

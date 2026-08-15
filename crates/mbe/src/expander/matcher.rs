@@ -490,7 +490,7 @@ fn match_loop_inner<'t>(
                     && subtree.delimiter.kind == delimiter.kind
                 {
                     item.stack.push(item.dot);
-                    item.dot = tokens.iter_delimited_with(*delimiter);
+                    item.dot = tokens.iter_delimited_with(**delimiter);
                     cur_items.push(item);
                 }
             }

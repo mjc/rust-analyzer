@@ -97,12 +97,18 @@ pub(crate) enum Op {
     Index { depth: usize },
     Len { depth: usize },
     Count { name: Symbol, depth: usize },
-    Concat { elements: Box<[ConcatMetaVarExprElem]>, span: Span },
+    Concat { payload: Box<ConcatOp> },
     Repeat { tokens: MetaTemplate, kind: RepeatKind, separator: Option<Arc<Separator>> },
-    Subtree { tokens: MetaTemplate, delimiter: tt::Delimiter },
+    Subtree { tokens: MetaTemplate, delimiter: Box<tt::Delimiter> },
     Literal(tt::Literal),
     Punct(Box<ArrayVec<tt::Punct, MAX_GLUED_PUNCT_LEN>>),
     Ident(tt::Ident),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConcatOp {
+    pub(crate) elements: Box<[ConcatMetaVarExprElem]>,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -287,7 +293,7 @@ fn next_op(
         TtElement::Subtree(subtree, subtree_iter) => {
             src.next().expect("first token already peeked");
             let tokens = MetaTemplate::parse(edition, subtree_iter, mode)?;
-            Op::Subtree { tokens, delimiter: subtree.delimiter }
+            Op::Subtree { tokens, delimiter: Box::new(subtree.delimiter) }
         }
     };
     Ok(res)
@@ -435,7 +441,12 @@ fn parse_metavar_expr(src: &mut TtIter<'_>) -> Result<Op, ()> {
             if elements.len() < 2 {
                 return Err(());
             }
-            Op::Concat { elements: elements.into_boxed_slice(), span: func.span }
+            Op::Concat {
+                payload: Box::new(ConcatOp {
+                    elements: elements.into_boxed_slice(),
+                    span: func.span,
+                }),
+            }
         }
         _ => return Err(()),
     };
