@@ -24,6 +24,8 @@ use std::{
     cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
+    marker::PhantomData,
+    num::NonZeroU32,
     ops::ControlFlow,
 };
 
@@ -40,6 +42,7 @@ use hir::{
 };
 use itertools::Itertools;
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
 use crate::RootDatabase;
 
@@ -278,7 +281,7 @@ pub fn world_symbols(db: &RootDatabase, mut query: Query) -> Vec<FileSymbol<'_>>
 
     // Normal search: use FST to match item name
     query.search::<()>(db, &indices, |f| {
-        res.push(f.clone());
+        res.push(f.to_file_symbol());
         ControlFlow::Continue(())
     });
 
@@ -366,8 +369,104 @@ fn resolve_path_to_modules(
 
 #[derive(Default, SalsaValue)]
 pub struct SymbolIndex<'db> {
-    symbols: Box<[FileSymbol<'db>]>,
+    symbols: Box<[IndexedFileSymbol<'db>]>,
+    hir_file_ids: Box<[hir::HirFileId]>,
+    template: Option<FileSymbol<'db>>,
     map: fst::Map<Vec<u8>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, SalsaValue)]
+struct IndexedFileSymbol<'db> {
+    name: hir::Symbol,
+    def: hir::ModuleDef,
+    loc: IndexedDeclarationLocation,
+    container_name: Option<hir::Symbol>,
+    is_alias: bool,
+    is_assoc: bool,
+    is_import: bool,
+    do_not_complete: hir::Complete,
+    _marker: PhantomData<fn() -> &'db ()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SalsaValue)]
+struct IndexedDeclarationLocation {
+    hir_file_id: NonZeroU32,
+    ptr: syntax::SyntaxNodePtr,
+    name_ptr: Option<syntax::AstPtr<either::Either<syntax::ast::Name, syntax::ast::NameRef>>>,
+}
+
+pub(crate) struct FileSymbolRef<'a, 'db> {
+    symbol: &'a IndexedFileSymbol<'db>,
+    index: &'a SymbolIndex<'db>,
+}
+
+impl IndexedDeclarationLocation {
+    fn new(
+        loc: hir::symbols::DeclarationLocation,
+        hir_file_ids: &mut FxHashMap<hir::HirFileId, NonZeroU32>,
+        stored_hir_file_ids: &mut Vec<hir::HirFileId>,
+    ) -> Self {
+        let hir_file_id = *hir_file_ids.entry(loc.hir_file_id).or_insert_with(|| {
+            stored_hir_file_ids.push(loc.hir_file_id);
+            NonZeroU32::new(
+                u32::try_from(stored_hir_file_ids.len())
+                    .expect("symbol index has more than u32::MAX files"),
+            )
+            .unwrap()
+        });
+        Self { hir_file_id, ptr: loc.ptr, name_ptr: loc.name_ptr }
+    }
+
+    fn get(self, hir_file_ids: &[hir::HirFileId]) -> hir::symbols::DeclarationLocation {
+        hir::symbols::DeclarationLocation {
+            hir_file_id: hir_file_ids[usize::try_from(self.hir_file_id.get() - 1).unwrap()],
+            ptr: self.ptr,
+            name_ptr: self.name_ptr,
+        }
+    }
+}
+
+impl<'db> IndexedFileSymbol<'db> {
+    fn new(
+        symbol: FileSymbol<'db>,
+        hir_file_ids: &mut FxHashMap<hir::HirFileId, NonZeroU32>,
+        stored_hir_file_ids: &mut Vec<hir::HirFileId>,
+    ) -> Self {
+        Self {
+            name: symbol.name,
+            def: symbol.def,
+            loc: IndexedDeclarationLocation::new(symbol.loc, hir_file_ids, stored_hir_file_ids),
+            container_name: symbol.container_name,
+            is_alias: symbol.is_alias,
+            is_assoc: symbol.is_assoc,
+            is_import: symbol.is_import,
+            do_not_complete: symbol.do_not_complete,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'db> FileSymbolRef<'_, 'db> {
+    pub(crate) fn def(&self) -> hir::ModuleDef {
+        self.symbol.def
+    }
+
+    pub(crate) fn do_not_complete(&self) -> hir::Complete {
+        self.symbol.do_not_complete
+    }
+
+    fn to_file_symbol(&self) -> FileSymbol<'db> {
+        let mut symbol = self.index.template.as_ref().unwrap().clone();
+        symbol.name = self.symbol.name.clone();
+        symbol.def = self.symbol.def;
+        symbol.loc = self.symbol.loc.get(&self.index.hir_file_ids);
+        symbol.container_name = self.symbol.container_name.clone();
+        symbol.is_alias = self.symbol.is_alias;
+        symbol.is_assoc = self.symbol.is_assoc;
+        symbol.is_import = self.symbol.is_import;
+        symbol.do_not_complete = self.symbol.do_not_complete;
+        symbol
+    }
 }
 
 #[salsa::tracked(lru = 128, returns(ref))]
@@ -466,7 +565,7 @@ impl fmt::Debug for SymbolIndex<'_> {
 
 impl PartialEq for SymbolIndex<'_> {
     fn eq(&self, other: &SymbolIndex<'_>) -> bool {
-        self.symbols == other.symbols
+        self.symbols == other.symbols && self.hir_file_ids == other.hir_file_ids
     }
 }
 
@@ -474,7 +573,8 @@ impl Eq for SymbolIndex<'_> {}
 
 impl Hash for SymbolIndex<'_> {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
-        self.symbols.hash(hasher)
+        self.symbols.hash(hasher);
+        self.hir_file_ids.hash(hasher);
     }
 }
 
@@ -523,7 +623,18 @@ impl<'db> SymbolIndex<'db> {
                 })
             })
             .unwrap();
-        SymbolIndex { symbols, map }
+        let template = symbols.first().cloned();
+        let mut hir_file_ids = FxHashMap::default();
+        let mut stored_hir_file_ids = Vec::new();
+        let symbols = symbols
+            .into_vec()
+            .into_iter()
+            .map(|symbol| {
+                IndexedFileSymbol::new(symbol, &mut hir_file_ids, &mut stored_hir_file_ids)
+            })
+            .collect();
+        stored_hir_file_ids.shrink_to_fit();
+        SymbolIndex { symbols, hir_file_ids: stored_hir_file_ids.into_boxed_slice(), template, map }
     }
 
     pub fn len(&self) -> usize {
@@ -531,7 +642,10 @@ impl<'db> SymbolIndex<'db> {
     }
 
     pub fn memory_size(&self) -> usize {
-        self.map.as_fst().size() + self.symbols.len() * size_of::<FileSymbol<'_>>()
+        self.map.as_fst().size()
+            + self.symbols.len() * size_of::<IndexedFileSymbol<'_>>()
+            + self.hir_file_ids.len() * size_of::<hir::HirFileId>()
+            + usize::from(self.template.is_some()) * size_of::<FileSymbol<'_>>()
     }
 
     fn range_to_map_value(start: usize, end: usize) -> u64 {
@@ -554,7 +668,7 @@ impl Query {
         &self,
         db: &'db RootDatabase,
         indices: &[&'db SymbolIndex<'db>],
-        cb: impl FnMut(&'db FileSymbol<'db>) -> ControlFlow<T>,
+        cb: impl FnMut(FileSymbolRef<'_, 'db>) -> ControlFlow<T>,
     ) -> Option<T> {
         let _p = tracing::info_span!("symbol_index::Query::search").entered();
 
@@ -592,7 +706,7 @@ impl Query {
         db: &'db RootDatabase,
         indices: &[&'db SymbolIndex<'db>],
         mut stream: fst::map::Union<'_>,
-        mut cb: impl FnMut(&'db FileSymbol<'db>) -> ControlFlow<T>,
+        mut cb: impl FnMut(FileSymbolRef<'_, 'db>) -> ControlFlow<T>,
     ) -> Option<T> {
         let ignore_underscore_prefixed = !self.query.starts_with("__");
         while let Some((_, indexed_values)) = stream.next() {
@@ -624,7 +738,8 @@ impl Query {
                         continue;
                     }
                     if self.mode.check(&self.query, self.case_sensitive, symbol_name)
-                        && let Some(b) = cb(symbol).break_value()
+                        && let Some(b) =
+                            cb(FileSymbolRef { symbol, index: symbol_index }).break_value()
                     {
                         return Some(b);
                     }
@@ -651,6 +766,40 @@ mod tests {
     use test_fixture::{WORKSPACE, WithFixture};
 
     use super::*;
+
+    #[test]
+    fn indexed_file_symbol_is_compact() {
+        assert_eq!(size_of::<IndexedFileSymbol<'_>>(), 64);
+    }
+
+    #[test]
+    fn indexed_file_symbols_roundtrip() {
+        let (db, _) = RootDatabase::with_single_file(
+            r#"
+struct Struct;
+impl Struct {
+    fn method() {}
+}
+macro_rules! make_item {
+    () => { fn generated() {} };
+}
+make_item!();
+"#,
+        );
+        let module = Crate::from(db.test_crate()).root_module(&db);
+        let symbols = SymbolCollector::new_module(&db, module, false);
+        let expected: FxHashSet<_> = symbols.iter().cloned().collect();
+
+        let index = SymbolIndex::new(symbols);
+        let actual: FxHashSet<_> = index
+            .symbols
+            .iter()
+            .map(|symbol| FileSymbolRef { symbol, index: &index }.to_file_symbol())
+            .collect();
+
+        assert_eq!(actual, expected);
+        assert!(index.hir_file_ids.len() < index.symbols.len());
+    }
 
     #[test]
     fn module_symbols_are_recomputed_after_lru_eviction() {
