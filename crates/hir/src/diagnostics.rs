@@ -237,7 +237,7 @@ pub struct UndeclaredLabel {
 pub struct InactiveCode {
     pub node: InFile<SyntaxNodePtr>,
     pub cfg: CfgExpr,
-    pub opts: CfgOptions,
+    pub opts: Arc<CfgOptions>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

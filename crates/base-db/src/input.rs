@@ -461,7 +461,7 @@ pub struct Crate {
     #[returns(ref)]
     pub workspace_data: Arc<CrateWorkspaceData>,
     #[returns(ref)]
-    pub cfg_options: CfgOptions,
+    pub cfg_options: Arc<CfgOptions>,
     #[returns(ref)]
     pub env: Env,
 }
@@ -681,11 +681,11 @@ impl CrateGraphBuilder {
                             .with_durability(Durability::MEDIUM)
                             .to(krate.extra.clone());
                     }
-                    if krate.cfg_options != *old_crate.cfg_options(db) {
+                    if krate.cfg_options != **old_crate.cfg_options(db) {
                         old_crate
                             .set_cfg_options(db)
                             .with_durability(Durability::MEDIUM)
-                            .to(krate.cfg_options.clone());
+                            .to(Arc::new(krate.cfg_options.clone()));
                     }
                     if krate.env != *old_crate.env(db) {
                         old_crate
@@ -706,7 +706,7 @@ impl CrateGraphBuilder {
                         crate_data,
                         krate.extra.clone(),
                         krate.ws_data.clone(),
-                        krate.cfg_options.clone(),
+                        Arc::new(krate.cfg_options.clone()),
                         krate.env.clone(),
                     )
                     .durability(Durability::MEDIUM)

@@ -18,6 +18,7 @@ use syntax::{
     ast::{self, HasModuleItem, HasName},
 };
 use thin_vec::ThinVec;
+use triomphe::Arc;
 
 use crate::{
     AssocItemId, AstIdWithPath, ConstLoc, FunctionId, FunctionLoc, ImplId, ItemContainerId,
@@ -139,7 +140,7 @@ struct AssocItemCollector<'db> {
     local_def_map: &'db LocalDefMap,
     ast_id_map: &'db AstIdMap,
     span_map: SpanMap<'db>,
-    cfg_options: &'db CfgOptions,
+    cfg_options: &'db Arc<CfgOptions>,
     file_id: HirFileId,
     diagnostics: Vec<DefDiagnostic>,
     container: ItemContainerId,
@@ -191,18 +192,19 @@ impl<'db> AssocItemCollector<'db> {
 
     fn collect_item(&mut self, item: ast::AssocItem) {
         let ast_id = self.ast_id_map.ast_id(&item);
-        let attrs = match AttrsOrCfg::lower(self.db, &item, &|| self.cfg_options, self.span_map) {
-            AttrsOrCfg::Enabled { attrs } => attrs,
-            AttrsOrCfg::CfgDisabled(cfg) => {
-                self.diagnostics.push(DefDiagnostic::unconfigured_code(
-                    self.module_id,
-                    InFile::new(self.file_id, ast_id.erase()),
-                    cfg.0,
-                    self.cfg_options.clone(),
-                ));
-                return;
-            }
-        };
+        let attrs =
+            match AttrsOrCfg::lower(self.db, &item, &|| self.cfg_options.as_ref(), self.span_map) {
+                AttrsOrCfg::Enabled { attrs } => attrs,
+                AttrsOrCfg::CfgDisabled(cfg) => {
+                    self.diagnostics.push(DefDiagnostic::unconfigured_code(
+                        self.module_id,
+                        InFile::new(self.file_id, ast_id.erase()),
+                        cfg.0,
+                        Arc::clone(self.cfg_options),
+                    ));
+                    return;
+                }
+            };
         let ast_id = InFile::new(self.file_id, ast_id.upcast());
 
         'attrs: for (attr_id, attr) in attrs.as_ref().iter() {

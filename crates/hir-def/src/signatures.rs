@@ -1045,7 +1045,7 @@ fn lower_fields<Field: ast::HasAttrs + ast::HasVisibility>(
                     crate::expr_store::ExpressionStoreDiagnostics::InactiveCode {
                         node: InFile::new(fields.file_id, SyntaxNodePtr::new(field.syntax())),
                         cfg,
-                        opts: cfg_options.clone(),
+                        opts: Arc::clone(cfg_options),
                     },
                 );
             }
@@ -1062,7 +1062,7 @@ fn lower_fields<Field: ast::HasAttrs + ast::HasVisibility>(
 #[derive(Debug, PartialEq, Eq)]
 pub struct InactiveEnumVariantCode {
     pub cfg: CfgExpr,
-    pub opts: CfgOptions,
+    pub opts: Arc<CfgOptions>,
     pub ast_id: span::FileAstId<ast::Variant>,
 }
 
@@ -1107,7 +1107,7 @@ impl EnumVariants {
                         diagnostics.push(InactiveEnumVariantCode {
                             ast_id,
                             cfg,
-                            opts: cfg_options.clone(),
+                            opts: Arc::clone(cfg_options),
                         });
                         None
                     }
@@ -1164,4 +1164,14 @@ pub(crate) fn extern_block_abi(db: &dyn SourceDatabase, extern_block: ExternBloc
         .abi()
         .and_then(|abi| abi.abi_string()?.text_without_quotes().parse().ok())
         .unwrap_or(ExternAbi::FALLBACK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inactive_enum_variant_diagnostic_is_compact() {
+        assert_eq!(std::mem::size_of::<InactiveEnumVariantCode>(), 40);
+    }
 }

@@ -24,6 +24,7 @@ use smallvec::SmallVec;
 use span::{Edition, SyntaxContext};
 use syntax::{AstPtr, SyntaxNodePtr, ast};
 use thin_vec::ThinVec;
+use triomphe::Arc;
 use tt::TextRange;
 
 use crate::{
@@ -323,7 +324,7 @@ struct FormatTemplate {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ExpressionStoreDiagnostics {
-    InactiveCode { node: InFile<SyntaxNodePtr>, cfg: CfgExpr, opts: CfgOptions },
+    InactiveCode { node: InFile<SyntaxNodePtr>, cfg: CfgExpr, opts: Arc<CfgOptions> },
     UnresolvedMacroCall { node: InFile<MacroCallPtr>, path: ModPath },
     UnreachableLabel { node: InFile<AstPtr<ast::Lifetime>>, name: Name },
     AwaitOutsideOfAsync { node: InFile<AstPtr<ast::AwaitExpr>>, location: String },

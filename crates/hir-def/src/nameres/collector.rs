@@ -246,7 +246,7 @@ struct DefCollector<'db> {
     // doesn't start with an unresolved crate's name.
     unresolved_extern_crates: FxHashSet<Name>,
     mod_dirs: FxHashMap<ModuleId, ModDir>,
-    cfg_options: &'db CfgOptions,
+    cfg_options: &'db Arc<CfgOptions>,
     /// List of procedural macros defined by this crate. This is read from the dynamic library
     /// built by the build system, and is the list of proc-macros we can actually expand. It is
     /// empty when proc-macro support is disabled (in which case we still do name resolution for
@@ -2765,7 +2765,7 @@ impl ModCollector<'_, '_> {
             self.module_id,
             ast_id,
             cfg.clone(),
-            self.def_collector.cfg_options.clone(),
+            Arc::clone(self.def_collector.cfg_options),
         ));
     }
 

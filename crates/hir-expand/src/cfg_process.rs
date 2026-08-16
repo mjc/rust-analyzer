@@ -3,7 +3,7 @@ use std::{cell::OnceCell, ops::ControlFlow};
 
 use ::tt::TextRange;
 use base_db::{Crate, SourceDatabase};
-use cfg::CfgExpr;
+use cfg::{CfgExpr, CfgOptions};
 use parser::T;
 use smallvec::SmallVec;
 use syntax::{
@@ -52,8 +52,8 @@ fn macro_input_callback(
     default_span: Span,
     span_map: SpanMap<'_>,
 ) -> impl FnMut(&mut PreorderWithTokens, &WalkEvent<SyntaxElement>) -> (bool, Vec<tt::Leaf>) {
-    let cfg_options = OnceCell::new();
-    let cfg_options = move || *cfg_options.get_or_init(|| krate.cfg_options(db));
+    let cfg_options: OnceCell<&CfgOptions> = OnceCell::new();
+    let cfg_options = move || *cfg_options.get_or_init(|| krate.cfg_options(db).as_ref());
 
     let mut should_strip_attr = {
         let mut item_tree_attr_id = 0;

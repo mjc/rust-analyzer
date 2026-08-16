@@ -653,9 +653,9 @@ impl AttrFlags {
             let mut lifetimes = ArenaMap::new();
             let mut type_and_consts = ArenaMap::new();
 
-            let mut cfg_options = None;
+            let mut cfg_options: Option<&CfgOptions> = None;
             let mut cfg_options =
-                || *cfg_options.get_or_insert_with(|| def.krate(db).cfg_options(db));
+                || *cfg_options.get_or_insert_with(|| def.krate(db).cfg_options(db).as_ref());
 
             let lifetimes_source = HasChildSource::<LocalLifetimeParamId>::child_source(&def, db);
             for (lifetime_id, lifetime) in lifetimes_source.value.iter() {

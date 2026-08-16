@@ -32,6 +32,7 @@ use syntax::{
     },
 };
 use thin_vec::ThinVec;
+use triomphe::Arc;
 use tt::TextRange;
 
 use crate::{
@@ -448,7 +449,7 @@ pub(crate) fn lower_function(
 
 pub struct ExprCollector<'db> {
     db: &'db dyn SourceDatabase,
-    cfg_options: &'db CfgOptions,
+    cfg_options: &'db Arc<CfgOptions>,
     expander: Expander<'db>,
     def_map: &'db DefMap,
     local_def_map: &'db LocalDefMap,
@@ -3148,7 +3149,7 @@ impl<'db> ExprCollector<'db> {
                 self.store.diagnostics.push(ExpressionStoreDiagnostics::InactiveCode {
                     node: self.expander.in_file(SyntaxNodePtr::new(owner.syntax())),
                     cfg,
-                    opts: self.cfg_options.clone(),
+                    opts: Arc::clone(self.cfg_options),
                 });
                 false
             }

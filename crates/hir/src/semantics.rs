@@ -286,8 +286,9 @@ impl<DB: HirDatabase + ?Sized> Semantics<'_, DB> {
         krate: Crate,
         item: ast::AnyHasAttrs,
     ) -> impl DoubleEndedIterator<Item = (LintAttr, SmolStr)> {
-        let mut cfg_options = None;
-        let cfg_options = || *cfg_options.get_or_insert_with(|| krate.id.cfg_options(self.db));
+        let mut cfg_options: Option<&cfg::CfgOptions> = None;
+        let cfg_options =
+            || *cfg_options.get_or_insert_with(|| krate.id.cfg_options(self.db).as_ref());
 
         let is_crate_root = file_id == krate.root_file(self.imp.db);
         let is_source_file = ast::SourceFile::can_cast(item.syntax().kind());
