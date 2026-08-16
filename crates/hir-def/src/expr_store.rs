@@ -20,10 +20,9 @@ use either::Either;
 use hir_expand::{InFile, MacroCallId, mod_path::ModPath, name::Name};
 use la_arena::{Arena, ArenaMap};
 use rustc_hash::FxHashMap;
-use salsa::plumbing::AsId;
 use smallvec::SmallVec;
 use span::{Edition, SyntaxContext};
-use syntax::{AstNode, AstPtr, SyntaxNodePtr, ast};
+use syntax::{AstPtr, SyntaxNodePtr, ast};
 use thin_vec::ThinVec;
 use triomphe::Arc;
 use tt::TextRange;
@@ -100,29 +99,6 @@ pub type TypeSource = InFile<TypePtr>;
 pub type LifetimePtr = AstPtr<ast::Lifetime>;
 pub type LifetimeSource = InFile<LifetimePtr>;
 
-type FrozenAstMap<N, V> = Box<[(InFile<AstPtr<N>>, V)]>;
-
-fn ast_source_key<N: AstNode>(source: &InFile<AstPtr<N>>) -> (u64, u32, u32, u16) {
-    let ptr = source.value.syntax_node_ptr();
-    let range = ptr.text_range();
-    (source.file_id.as_id().as_bits(), range.start().into(), range.end().into(), ptr.kind().into())
-}
-
-fn freeze_ast_map<N: AstNode, V>(map: FxHashMap<InFile<AstPtr<N>>, V>) -> FrozenAstMap<N, V> {
-    let mut map: Vec<_> = map.into_iter().collect();
-    map.sort_unstable_by_key(|(source, _)| ast_source_key(source));
-    map.into_boxed_slice()
-}
-
-fn frozen_ast_map_get<'a, N: AstNode, V>(
-    map: &'a FrozenAstMap<N, V>,
-    source: &InFile<AstPtr<N>>,
-) -> Option<&'a V> {
-    map.binary_search_by_key(&ast_source_key(source), |(source, _)| ast_source_key(source))
-        .ok()
-        .map(|index| &map[index].1)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExprRoot {
     root: ExprId,
@@ -193,13 +169,13 @@ pub struct ExpressionStore {
 struct ExpressionOnlySourceMap {
     // AST expressions can create patterns in destructuring assignments. Therefore, `ExprSource` can also map
     // to `PatId`, and `PatId` can also map to `ExprSource` (the other way around is unaffected).
-    expr_map: FrozenAstMap<ast::Expr, ExprOrPatIdPacked>,
+    expr_map: FxHashMap<ExprSource, ExprOrPatIdPacked>,
     expr_map_back: ArenaMap<ExprId, ExprOrPatSource>,
 
-    pat_map: FrozenAstMap<ast::Pat, ExprOrPatIdPacked>,
+    pat_map: FxHashMap<PatSource, ExprOrPatIdPacked>,
     pat_map_back: ArenaMap<PatId, ExprOrPatSource>,
 
-    label_map: FrozenAstMap<Either<ast::Label, ast::BlockExpr>, LabelId>,
+    label_map: FxHashMap<LabelSource, LabelId>,
     label_map_back: ArenaMap<LabelId, LabelSource>,
 
     binding_definitions:
@@ -258,9 +234,14 @@ pub struct ExpressionStoreSourceMap {
     expr_only: Option<Box<ExpressionOnlySourceMap>>,
 
     types_map_back: ArenaMap<TypeRefId, TypeSource>,
-    types_map: FrozenAstMap<ast::Type, TypeRefId>,
+    types_map: FxHashMap<TypeSource, TypeRefId>,
 
     lifetime_map_back: ArenaMap<LifetimeRefId, LifetimeSource>,
+    #[expect(
+        unused,
+        reason = "this is here for completeness, and maybe we'll need it in the future"
+    )]
+    lifetime_map: FxHashMap<LifetimeSource, LifetimeRefId>,
 }
 
 impl PartialEq for ExpressionStoreSourceMap {
@@ -268,7 +249,8 @@ impl PartialEq for ExpressionStoreSourceMap {
         // we only need to compare one of the two mappings
         // as the other is a reverse mapping and thus will compare
         // the same as normal mapping
-        let Self { expr_only, types_map_back, types_map: _, lifetime_map_back } = self;
+        let Self { expr_only, types_map_back, types_map: _, lifetime_map_back, lifetime_map: _ } =
+            self;
         *expr_only == other.expr_only
             && *types_map_back == other.types_map_back
             && *lifetime_map_back == other.lifetime_map_back
@@ -304,6 +286,7 @@ pub struct ExpressionStoreBuilder {
     types_map: FxHashMap<TypeSource, TypeRefId>,
 
     lifetime_map_back: ArenaMap<LifetimeRefId, LifetimeSource>,
+    lifetime_map: FxHashMap<LifetimeSource, LifetimeRefId>,
 
     binding_definitions:
         ArenaMap<BindingId, SmallVec<[PatId; 2 * size_of::<usize>() / size_of::<PatId>()]>>,
@@ -364,15 +347,16 @@ impl ExpressionStoreBuilder {
             mut types,
             mut lifetimes,
 
-            expr_map,
+            mut expr_map,
             mut expr_map_back,
-            pat_map,
+            mut pat_map,
             mut pat_map_back,
-            label_map,
+            mut label_map,
             mut label_map_back,
             mut types_map_back,
-            types_map,
+            mut types_map,
             mut lifetime_map_back,
+            mut lifetime_map,
             mut binding_definitions,
             mut field_map_back,
             mut pat_field_map_back,
@@ -389,11 +373,16 @@ impl ExpressionStoreBuilder {
         types.shrink_to_fit();
         lifetimes.shrink_to_fit();
 
+        expr_map.shrink_to_fit();
         expr_map_back.shrink_to_fit();
+        pat_map.shrink_to_fit();
         pat_map_back.shrink_to_fit();
+        label_map.shrink_to_fit();
         label_map_back.shrink_to_fit();
         types_map_back.shrink_to_fit();
+        types_map.shrink_to_fit();
         lifetime_map_back.shrink_to_fit();
+        lifetime_map.shrink_to_fit();
         binding_definitions.shrink_to_fit();
         field_map_back.shrink_to_fit();
         pat_field_map_back.shrink_to_fit();
@@ -408,11 +397,6 @@ impl ExpressionStoreBuilder {
             implicit_capture_to_source.shrink_to_fit();
         }
         expansions.shrink_to_fit();
-
-        let expr_map = freeze_ast_map(expr_map);
-        let pat_map = freeze_ast_map(pat_map);
-        let label_map = freeze_ast_map(label_map);
-        let types_map = freeze_ast_map(types_map);
 
         let has_exprs =
             !exprs.is_empty() || !labels.is_empty() || !pats.is_empty() || !bindings.is_empty();
@@ -458,7 +442,13 @@ impl ExpressionStoreBuilder {
             } else {
                 None
             };
-            ExpressionStoreSourceMap { expr_only, types_map_back, types_map, lifetime_map_back }
+            ExpressionStoreSourceMap {
+                expr_only,
+                types_map_back,
+                types_map,
+                lifetime_map_back,
+                lifetime_map,
+            }
         };
 
         (store, source_map)
@@ -1170,9 +1160,7 @@ impl ExpressionStoreSourceMap {
 
     pub fn node_expr(&self, node: InFile<&ast::Expr>) -> Option<ExprOrPatId> {
         let src = node.map(AstPtr::new);
-        frozen_ast_map_get(&self.expr_only()?.expr_map, &src)
-            .copied()
-            .map(ExprOrPatIdPacked::unpack)
+        self.expr_only()?.expr_map.get(&src).cloned().map(ExprOrPatIdPacked::unpack)
     }
 
     pub fn node_macro_file(&self, node: InFile<&ast::MacroCall>) -> Option<MacroCallId> {
@@ -1189,8 +1177,10 @@ impl ExpressionStoreSourceMap {
     }
 
     pub fn node_pat(&self, node: InFile<&ast::Pat>) -> Option<ExprOrPatId> {
-        frozen_ast_map_get(&self.expr_only()?.pat_map, &node.map(AstPtr::new))
-            .copied()
+        self.expr_only()?
+            .pat_map
+            .get(&node.map(AstPtr::new))
+            .cloned()
             .map(ExprOrPatIdPacked::unpack)
     }
 
@@ -1199,7 +1189,7 @@ impl ExpressionStoreSourceMap {
     }
 
     pub fn node_type(&self, node: InFile<&ast::Type>) -> Option<TypeRefId> {
-        frozen_ast_map_get(&self.types_map, &node.map(AstPtr::new)).copied()
+        self.types_map.get(&node.map(AstPtr::new)).cloned()
     }
 
     pub fn label_syntax(&self, label: LabelId) -> LabelSource {
@@ -1212,7 +1202,7 @@ impl ExpressionStoreSourceMap {
 
     pub fn node_label(&self, node: InFile<&ast::Label>) -> Option<LabelId> {
         let src = node.map(AstPtr::new).map(AstPtr::wrap_left);
-        frozen_ast_map_get(&self.expr_only()?.label_map, &src).copied()
+        self.expr_only()?.label_map.get(&src).cloned()
     }
 
     pub fn field_syntax(&self, expr: ExprId) -> FieldSource {
@@ -1225,9 +1215,7 @@ impl ExpressionStoreSourceMap {
 
     pub fn macro_expansion_expr(&self, node: InFile<&ast::MacroExpr>) -> Option<ExprOrPatId> {
         let src = node.map(AstPtr::new).map(AstPtr::upcast::<ast::MacroExpr>).map(AstPtr::upcast);
-        frozen_ast_map_get(&self.expr_only()?.expr_map, &src)
-            .copied()
-            .map(ExprOrPatIdPacked::unpack)
+        self.expr_only()?.expr_map.get(&src).copied().map(ExprOrPatIdPacked::unpack)
     }
 
     pub fn expansions(&self) -> impl Iterator<Item = (&InFile<MacroCallPtr>, &MacroCallId)> {
@@ -1248,7 +1236,7 @@ impl ExpressionStoreSourceMap {
             .template_map
             .as_ref()?
             .format_args_to_captures
-            .get(&frozen_ast_map_get(&expr_only.expr_map, &src)?.as_expr()?)?;
+            .get(&expr_only.expr_map.get(&src)?.as_expr()?)?;
         Some((*hygiene, &**names))
     }
 
@@ -1270,7 +1258,7 @@ impl ExpressionStoreSourceMap {
     ) -> Option<(ExprId, &[Vec<(syntax::TextRange, usize)>])> {
         let expr_only = self.expr_only()?;
         let src = node.map(AstPtr::new).map(AstPtr::upcast::<ast::Expr>);
-        let expr = frozen_ast_map_get(&expr_only.expr_map, &src)?.as_expr()?;
+        let expr = expr_only.expr_map.get(&src)?.as_expr()?;
         Some(expr).zip(
             expr_only.template_map.as_ref()?.asm_to_captures.get(&expr).map(std::ops::Deref::deref),
         )
@@ -1279,16 +1267,5 @@ impl ExpressionStoreSourceMap {
     /// Get a reference to the source map's diagnostics.
     pub fn diagnostics(&self) -> &[ExpressionStoreDiagnostics] {
         self.expr_only().map(|it| &*it.diagnostics).unwrap_or_default()
-    }
-}
-
-#[cfg(test)]
-mod layout_tests {
-    use super::*;
-
-    #[test]
-    fn finalized_source_maps_are_compact() {
-        assert_eq!(std::mem::size_of::<ExpressionOnlySourceMap>(), 256);
-        assert_eq!(std::mem::size_of::<ExpressionStoreSourceMap>(), 72);
     }
 }
