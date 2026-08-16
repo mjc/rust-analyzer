@@ -245,7 +245,7 @@ impl FileTextStorage {
             return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
         }
 
-        let compressed = lz4_flex::compress_prepend_size(text.as_bytes());
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(text.as_bytes(), 1);
         if text.len() <= compressed.len() {
             return FileTextStorage(FileTextStorageKind::Plain(Arc::from(text)));
         }
@@ -256,7 +256,7 @@ impl FileTextStorage {
         match &self.0 {
             FileTextStorageKind::Plain(text) => Arc::clone(text),
             FileTextStorageKind::Compressed(bytes) => {
-                let bytes = lz4_flex::decompress_size_prepended(bytes)
+                let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(bytes)
                     .expect("internally compressed file text must be valid");
                 let text = String::from_utf8(bytes)
                     .expect("internally compressed file text must be UTF-8");
@@ -513,5 +513,21 @@ mod tests {
         let storage = FileTextStorage::new(&text, Durability::HIGH);
 
         assert!(storage.stored_len() < text.len() / 2);
+    }
+
+    #[test]
+    fn high_durability_varied_source_compresses_compactly() {
+        let text = (0..4096)
+            .map(|index| {
+                format!(
+                    "pub fn function_{index}() -> usize {{ let value_{} = {index}; value_{} }}\n",
+                    index % 97,
+                    index % 97,
+                )
+            })
+            .collect::<String>();
+        let storage = FileTextStorage::new(&text, Durability::HIGH);
+
+        assert!(storage.stored_len() < text.len() / 6);
     }
 }
