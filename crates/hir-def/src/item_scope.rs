@@ -566,13 +566,13 @@ impl ScopeNameIndex {
 
 #[derive(Debug)]
 enum ScopeMap<V> {
-    Mutable(FxIndexMap<Name, V>),
+    Mutable(Option<Box<FxIndexMap<Name, V>>>),
     Frozen { entries: Box<[(Name, V)]>, by_name: ScopeNameIndex },
 }
 
 impl<V> Default for ScopeMap<V> {
     fn default() -> Self {
-        Self::Mutable(FxIndexMap::default())
+        Self::Mutable(None)
     }
 }
 
@@ -605,7 +605,7 @@ impl<V: Eq> Eq for ScopeMap<V> {}
 impl<V> ScopeMap<V> {
     fn get(&self, name: &Name) -> Option<&V> {
         match self {
-            Self::Mutable(map) => map.get(name),
+            Self::Mutable(map) => map.as_deref()?.get(name),
             Self::Frozen { entries, by_name } => {
                 let index = by_name.binary_search_by(|index| entries[index].0.cmp(name))?;
                 Some(&entries[by_name.get(index)].1)
@@ -615,7 +615,7 @@ impl<V> ScopeMap<V> {
 
     fn get_mut(&mut self, name: &Name) -> Option<&mut V> {
         match self {
-            Self::Mutable(map) => map.get_mut(name),
+            Self::Mutable(map) => map.as_deref_mut()?.get_mut(name),
             Self::Frozen { entries, by_name } => {
                 let index = by_name.binary_search_by(|index| entries[index].0.cmp(name))?;
                 Some(&mut entries[by_name.get(index)].1)
@@ -626,28 +626,28 @@ impl<V> ScopeMap<V> {
     #[cfg(test)]
     fn insert(&mut self, name: Name, value: V) -> Option<V> {
         match self {
-            Self::Mutable(map) => map.insert(name, value),
+            Self::Mutable(map) => map.get_or_insert_with(Default::default).insert(name, value),
             Self::Frozen { .. } => panic!("cannot insert into a frozen item scope"),
         }
     }
 
     fn shift_remove(&mut self, name: &Name) -> Option<V> {
         match self {
-            Self::Mutable(map) => map.shift_remove(name),
+            Self::Mutable(map) => map.as_deref_mut().and_then(|map| map.shift_remove(name)),
             Self::Frozen { .. } => panic!("cannot remove from a frozen item scope"),
         }
     }
 
     fn entry(&mut self, name: Name) -> Entry<'_, Name, V> {
         match self {
-            Self::Mutable(map) => map.entry(name),
+            Self::Mutable(map) => map.get_or_insert_with(Default::default).entry(name),
             Self::Frozen { .. } => panic!("cannot insert into a frozen item scope"),
         }
     }
 
     fn iter(&self) -> impl Iterator<Item = (&Name, &V)> {
         match self {
-            Self::Mutable(map) => Either::Left(map.iter()),
+            Self::Mutable(map) => Either::Left(map.iter().flat_map(|map| map.iter())),
             Self::Frozen { entries, .. } => {
                 Either::Right(entries.iter().map(|(name, value)| (name, value)))
             }
@@ -664,7 +664,7 @@ impl<V> ScopeMap<V> {
 
     fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
         match self {
-            Self::Mutable(map) => Either::Left(map.values_mut()),
+            Self::Mutable(map) => Either::Left(map.iter_mut().flat_map(|map| map.values_mut())),
             Self::Frozen { entries, .. } => {
                 Either::Right(entries.iter_mut().map(|(_, value)| value))
             }
@@ -679,7 +679,11 @@ impl<V> ScopeMap<V> {
                 return;
             }
         };
-        let entries = map.into_iter().collect::<Vec<_>>().into_boxed_slice();
+        let entries = map
+            .into_iter()
+            .flat_map(|map| (*map).into_iter())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let len = u32::try_from(entries.len()).expect("ItemScope has more than u32::MAX entries");
         let mut by_name = (0..len).collect::<Vec<_>>();
         by_name.sort_unstable_by(|&left, &right| {
@@ -799,7 +803,7 @@ pub struct ItemScope {
     types: ScopeMap<ScopeTypesItem>,
     item_overflow: ThinVec<ScopeItemFull>,
     values: ScopeMap<ScopeValuesItem>,
-    macros: FxIndexMap<Name, MacrosItem>,
+    macros: ScopeMap<MacrosItem>,
     /// Deduplicated visibilities referenced by type and value entries.
     visibilities: ThinVec<Visibility>,
     /// Deduplicated import provenance referenced by type and value entries.
@@ -850,6 +854,30 @@ pub struct ItemScope {
 mod tests {
     use super::*;
     use crate::visibility::VisibilityExplicitness;
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn finalized_scope_map_state_is_compact() {
+        assert_eq!(std::mem::size_of::<ScopeMap<ScopeTypesItem>>(), 32);
+        assert_eq!(std::mem::size_of::<ItemScope>(), 312);
+        assert_eq!(std::mem::size_of::<crate::nameres::ModuleData>(), 424);
+    }
+
+    #[test]
+    fn empty_scope_map_promotes_and_freezes_without_losing_order() {
+        let first = Name::new_symbol_root(intern::Symbol::intern("first"));
+        let second = Name::new_symbol_root(intern::Symbol::intern("second"));
+        let mut map = ScopeMap::default();
+
+        assert!(map.get(&first).is_none());
+        map.entry(second.clone()).or_insert(2);
+        map.entry(first.clone()).or_insert(1);
+        map.shrink_to_fit();
+
+        assert_eq!(map.get(&first), Some(&1));
+        assert_eq!(map.get(&second), Some(&2));
+        assert_eq!(map.iter().collect::<Vec<_>>(), [(&second, &2), (&first, &1)]);
+    }
 
     #[test]
     fn values_scope_entry_is_compact() {
