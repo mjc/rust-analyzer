@@ -5,8 +5,9 @@ use std::marker::PhantomData;
 use base_db::{FxIndexSet, salsa::SalsaValue};
 use either::Either;
 use hir_def::{
-    AdtId, AssocItemId, AstIdLoc, Complete, DefWithBodyId, ExternCrateId, HasModule, ImplId,
-    Lookup, MacroId, ModuleDefId, ModuleId, TraitId,
+    AdtId, AssocItemId, AstIdLoc, AttrDefId, Complete, DefWithBodyId, ExternCrateId, HasModule,
+    ImplId, Lookup, MacroId, ModuleDefId, ModuleId, TraitId,
+    attrs::AttrFlags,
     expr_store::Body,
     item_scope::{ImportId, ImportOrExternCrate, ImportOrGlob},
     nameres::crate_def_map,
@@ -485,41 +486,39 @@ impl<'a> SymbolCollector<'a> {
         trait_do_not_complete: Option<Complete>,
     ) -> Complete
     where
-        L: Lookup + Into<ModuleDefId>,
+        L: Lookup + Copy + Into<ModuleDefId> + Into<AttrDefId>,
         <L as Lookup>::Data: HasSource,
         <<L as Lookup>::Data as HasSource>::Value: HasName,
     {
         let loc = id.lookup(self.db);
         let source = loc.source(self.db);
         let Some(name_node) = source.value.name() else { return Complete::Yes };
-        let def = ModuleDef::from(id.into());
+        let def = ModuleDef::from(<L as Into<ModuleDefId>>::into(id));
         let loc = DeclarationLocation {
             hir_file_id: source.file_id,
             ptr: SyntaxNodePtr::new(source.value.syntax()),
             name_ptr: Some(AstPtr::new(&name_node).wrap_left()),
         };
 
-        let mut do_not_complete = Complete::Yes;
+        let (attrs, aliases) =
+            AttrFlags::collect_with_doc_aliases(self.db, <L as Into<AttrDefId>>::into(id));
+        let mut do_not_complete = Complete::extract(matches!(def, ModuleDef::Trait(_)), attrs);
+        if let Some(trait_do_not_complete) = trait_do_not_complete {
+            do_not_complete = Complete::for_trait_item(trait_do_not_complete, do_not_complete);
+        }
 
-        if let Some(attrs) = def.attrs(self.db) {
-            do_not_complete = Complete::extract(matches!(def, ModuleDef::Trait(_)), attrs.attrs);
-            if let Some(trait_do_not_complete) = trait_do_not_complete {
-                do_not_complete = Complete::for_trait_item(trait_do_not_complete, do_not_complete);
-            }
-
-            for alias in attrs.doc_aliases(self.db) {
-                self.symbols.insert(FileSymbol {
-                    name: alias.clone(),
-                    def,
-                    loc,
-                    container_name: self.current_container_name.clone(),
-                    is_alias: true,
-                    is_assoc,
-                    is_import: false,
-                    do_not_complete,
-                    _marker: PhantomData,
-                });
-            }
+        for alias in aliases {
+            self.symbols.insert(FileSymbol {
+                name: alias,
+                def,
+                loc,
+                container_name: self.current_container_name.clone(),
+                is_alias: true,
+                is_assoc,
+                is_import: false,
+                do_not_complete,
+                _marker: PhantomData,
+            });
         }
 
         self.symbols.insert(FileSymbol {
@@ -551,23 +550,22 @@ impl<'a> SymbolCollector<'a> {
 
         let def = ModuleDef::Module(module_id.into());
 
-        let mut do_not_complete = Complete::Yes;
-        if let Some(attrs) = def.attrs(self.db) {
-            do_not_complete = Complete::extract(matches!(def, ModuleDef::Trait(_)), attrs.attrs);
+        let (attrs, aliases) =
+            AttrFlags::collect_with_doc_aliases(self.db, AttrDefId::ModuleId(module_id));
+        let do_not_complete = Complete::extract(matches!(def, ModuleDef::Trait(_)), attrs);
 
-            for alias in attrs.doc_aliases(self.db) {
-                self.symbols.insert(FileSymbol {
-                    name: alias.clone(),
-                    def,
-                    loc,
-                    container_name: self.current_container_name.clone(),
-                    is_alias: true,
-                    is_assoc: false,
-                    is_import: false,
-                    do_not_complete,
-                    _marker: PhantomData,
-                });
-            }
+        for alias in aliases {
+            self.symbols.insert(FileSymbol {
+                name: alias,
+                def,
+                loc,
+                container_name: self.current_container_name.clone(),
+                is_alias: true,
+                is_assoc: false,
+                is_import: false,
+                do_not_complete,
+                _marker: PhantomData,
+            });
         }
 
         self.symbols.insert(FileSymbol {

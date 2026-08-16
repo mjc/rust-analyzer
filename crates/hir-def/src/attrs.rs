@@ -599,6 +599,19 @@ fn extract_cfgs(result: &mut Vec<CfgExpr>, attr: ast::Meta) -> ControlFlow<Infal
 
 #[salsa::tracked]
 impl AttrFlags {
+    pub fn collect_with_doc_aliases(
+        db: &dyn SourceDatabase,
+        owner: AttrDefId,
+    ) -> (AttrFlags, Box<[Symbol]>) {
+        let mut flags = AttrFlags::empty();
+        let mut aliases = Vec::new();
+        collect_attrs::<Infallible>(db, owner, |attr| {
+            extract_doc_aliases(&mut aliases, attr.clone());
+            match_attr_flags(&mut flags, attr)
+        });
+        (flags, aliases.into_boxed_slice())
+    }
+
     #[salsa::tracked(returns(copy))]
     pub fn query(db: &dyn SourceDatabase, owner: AttrDefId) -> AttrFlags {
         let mut attr_flags = AttrFlags::empty();
@@ -1427,9 +1440,9 @@ fn next_doc_expr(it: &mut Peekable<TokenTreeChildren>) -> Option<DocAtom> {
 mod tests {
     use test_fixture::WithFixture;
 
-    use crate::AttrDefId;
     use crate::attrs::AttrFlags;
     use crate::test_db::TestDB;
+    use crate::{AttrDefId, ModuleDefId, nameres::crate_def_map};
 
     #[test]
     fn crate_attrs() {
@@ -1440,5 +1453,36 @@ mod tests {
         let module = db.module_for_file(file_id.file_id(&db));
         let attrs = AttrFlags::query(&db, AttrDefId::ModuleId(module));
         assert!(attrs.contains(AttrFlags::IS_NO_STD | AttrFlags::HAS_CFG));
+    }
+
+    #[test]
+    fn collecting_symbol_attrs_does_not_cache_attr_flags() {
+        let db = TestDB::with_files(
+            r#"
+#[cfg_attr(all(), doc(alias = "renamed"))]
+#[cfg_attr(all(), rust_analyzer::completions(ignore_flyimport))]
+fn ordinary() {}
+"#,
+        );
+        let krate = db.fetch_test_crate();
+        let def_map = crate_def_map(&db, krate);
+        let function = def_map
+            .modules()
+            .flat_map(|(_, module)| module.scope.declarations())
+            .find_map(|def| match def {
+                ModuleDefId::FunctionId(function) => Some(function),
+                _ => None,
+            })
+            .unwrap();
+
+        let mut collected = None;
+        let executed = db.log_executed(|| {
+            collected = Some(AttrFlags::collect_with_doc_aliases(&db, function.into()));
+        });
+        let (flags, aliases) = collected.unwrap();
+
+        assert!(flags.contains(AttrFlags::COMPLETE_IGNORE_FLYIMPORT));
+        assert_eq!(&*aliases, &[intern::Symbol::intern("renamed")]);
+        assert!(!executed.iter().any(|query| query.contains("AttrFlags::query")));
     }
 }
