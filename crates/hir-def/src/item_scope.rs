@@ -280,6 +280,131 @@ const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 24);
 const _: () = assert!(std::mem::size_of::<ScopeImportOrExternCrate>() == 12);
 const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 24);
 
+#[derive(Debug)]
+enum ScopeMap<V> {
+    Mutable(FxIndexMap<Name, V>),
+    Frozen { entries: Box<[(Name, V)]>, by_name: Box<[u32]> },
+}
+
+impl<V> Default for ScopeMap<V> {
+    fn default() -> Self {
+        Self::Mutable(FxIndexMap::default())
+    }
+}
+
+impl<V: PartialEq> PartialEq for ScopeMap<V> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Frozen { entries: left_entries, by_name: left_by_name },
+                Self::Frozen { entries: right_entries, by_name: right_by_name },
+            ) => {
+                left_by_name.len() == right_by_name.len()
+                    && left_by_name.iter().zip(right_by_name).all(|(&left, &right)| {
+                        let (left_name, left_value) = &left_entries[left as usize];
+                        let (right_name, right_value) = &right_entries[right as usize];
+                        left_name == right_name && left_value == right_value
+                    })
+            }
+            _ => {
+                self.iter().count() == other.iter().count()
+                    && self.iter().all(|(name, value)| other.get(name) == Some(value))
+            }
+        }
+    }
+}
+
+impl<V: Eq> Eq for ScopeMap<V> {}
+
+impl<V> ScopeMap<V> {
+    fn get(&self, name: &Name) -> Option<&V> {
+        match self {
+            Self::Mutable(map) => map.get(name),
+            Self::Frozen { entries, by_name } => {
+                let index =
+                    by_name.binary_search_by(|&index| entries[index as usize].0.cmp(name)).ok()?;
+                Some(&entries[by_name[index] as usize].1)
+            }
+        }
+    }
+
+    fn get_mut(&mut self, name: &Name) -> Option<&mut V> {
+        match self {
+            Self::Mutable(map) => map.get_mut(name),
+            Self::Frozen { entries, by_name } => {
+                let index =
+                    by_name.binary_search_by(|&index| entries[index as usize].0.cmp(name)).ok()?;
+                Some(&mut entries[by_name[index] as usize].1)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn insert(&mut self, name: Name, value: V) -> Option<V> {
+        match self {
+            Self::Mutable(map) => map.insert(name, value),
+            Self::Frozen { .. } => panic!("cannot insert into a frozen item scope"),
+        }
+    }
+
+    fn shift_remove(&mut self, name: &Name) -> Option<V> {
+        match self {
+            Self::Mutable(map) => map.shift_remove(name),
+            Self::Frozen { .. } => panic!("cannot remove from a frozen item scope"),
+        }
+    }
+
+    fn entry(&mut self, name: Name) -> Entry<'_, Name, V> {
+        match self {
+            Self::Mutable(map) => map.entry(name),
+            Self::Frozen { .. } => panic!("cannot insert into a frozen item scope"),
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Name, &V)> {
+        match self {
+            Self::Mutable(map) => Either::Left(map.iter()),
+            Self::Frozen { entries, .. } => {
+                Either::Right(entries.iter().map(|(name, value)| (name, value)))
+            }
+        }
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &Name> {
+        self.iter().map(|(name, _)| name)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, value)| value)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        match self {
+            Self::Mutable(map) => Either::Left(map.values_mut()),
+            Self::Frozen { entries, .. } => {
+                Either::Right(entries.iter_mut().map(|(_, value)| value))
+            }
+        }
+    }
+
+    fn shrink_to_fit(&mut self) {
+        let map = match std::mem::take(self) {
+            Self::Mutable(map) => map,
+            frozen @ Self::Frozen { .. } => {
+                *self = frozen;
+                return;
+            }
+        };
+        let entries = map.into_iter().collect::<Vec<_>>().into_boxed_slice();
+        let len = u32::try_from(entries.len()).expect("ItemScope has more than u32::MAX entries");
+        let mut by_name = (0..len).collect::<Vec<_>>();
+        by_name.sort_unstable_by(|&left, &right| {
+            entries[left as usize].0.cmp(&entries[right as usize].0)
+        });
+        *self = Self::Frozen { entries, by_name: by_name.into_boxed_slice() };
+    }
+}
+
 impl PerNsGlobImports {
     pub(crate) fn contains_type(&self, module_id: ModuleId, name: Name) -> bool {
         self.types.contains(&(module_id, name))
@@ -297,8 +422,8 @@ pub struct ItemScope {
     /// Defs visible in this scope. This includes `declarations`, but also
     /// imports. The imports belong to this module and can be resolved by using them on
     /// the `use_imports_*` fields.
-    types: FxIndexMap<Name, ScopeTypesItem>,
-    values: FxIndexMap<Name, ScopeValuesItem>,
+    types: ScopeMap<ScopeTypesItem>,
+    values: ScopeMap<ScopeValuesItem>,
     macros: FxIndexMap<Name, MacrosItem>,
     /// Deduplicated visibilities referenced by type and value entries.
     visibilities: ThinVec<Visibility>,
@@ -359,6 +484,34 @@ mod tests {
     #[test]
     fn type_scope_entry_is_compact() {
         assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 24);
+    }
+
+    #[test]
+    fn frozen_scope_map_preserves_lookup_and_insertion_order() {
+        let first = Name::new_symbol_root(intern::Symbol::intern("first"));
+        let second = Name::new_symbol_root(intern::Symbol::intern("second"));
+        let third = Name::new_symbol_root(intern::Symbol::intern("third"));
+        let mut map = ScopeMap::default();
+
+        map.entry(second.clone()).or_insert(2);
+        map.entry(first.clone()).or_insert(1);
+        map.entry(third.clone()).or_insert(3);
+        map.shrink_to_fit();
+
+        assert_eq!(map.get(&first), Some(&1));
+        assert_eq!(map.get(&second), Some(&2));
+        assert_eq!(map.get(&third), Some(&3));
+        assert_eq!(
+            map.iter().map(|(name, &value)| (name.clone(), value)).collect::<Vec<_>>(),
+            [(second.clone(), 2), (first.clone(), 1), (third.clone(), 3),]
+        );
+
+        let mut reordered = ScopeMap::default();
+        reordered.entry(third.clone()).or_insert(3);
+        reordered.entry(first.clone()).or_insert(1);
+        reordered.entry(second.clone()).or_insert(2);
+        reordered.shrink_to_fit();
+        assert_eq!(map, reordered, "map equality must remain independent of insertion order");
     }
 
     #[test]
