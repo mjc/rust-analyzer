@@ -1,6 +1,13 @@
 use base_db::SourceDatabase;
 use expect_test::Expect;
-use hir_def::{DefWithBodyId, ModuleDefId, expr_store::Body, signatures::ImplSignature};
+use hir_def::{
+    AdtId, DefWithBodyId, ModuleDefId,
+    expr_store::Body,
+    signatures::{
+        ConstSignature, EnumSignature, FunctionSignature, ImplSignature, StaticSignature,
+        StructSignature, TraitSignature, TypeAliasSignature, UnionSignature,
+    },
+};
 use salsa::EventKind;
 use test_fixture::WithFixture;
 
@@ -53,6 +60,74 @@ impl S {}
 }
 
 #[test]
+fn signatures_without_source_maps_do_not_build_source_maps() {
+    let (db, file_id) = TestDB::with_single_file(
+        r#"
+struct S<T>(T);
+union U<T> { field: T }
+enum E<T> { Variant(T) }
+const C: u32 = 0;
+static STATIC: u32 = 0;
+trait Trait<T> {}
+fn function<T>(_: T) {}
+type Alias<T> = T;
+"#,
+    );
+
+    crate::attach_db(&db, || {
+        let module = db.module_for_file(file_id.file_id(&db));
+        let declarations = module.def_map(&db)[module].scope.declarations().collect::<Vec<_>>();
+        let mut lowered = 0;
+        let (executed, _) = db.log_executed(|| {
+            for def in declarations {
+                let is_signature = match def {
+                    ModuleDefId::AdtId(AdtId::StructId(id)) => {
+                        _ = StructSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::AdtId(AdtId::UnionId(id)) => {
+                        _ = UnionSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::AdtId(AdtId::EnumId(id)) => {
+                        _ = EnumSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::ConstId(id) => {
+                        _ = ConstSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::StaticId(id) => {
+                        _ = StaticSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::TraitId(id) => {
+                        _ = TraitSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::FunctionId(id) => {
+                        _ = FunctionSignature::of(&db, id);
+                        true
+                    }
+                    ModuleDefId::TypeAliasId(id) => {
+                        _ = TypeAliasSignature::of(&db, id);
+                        true
+                    }
+                    _ => false,
+                };
+                lowered += usize::from(is_signature);
+            }
+        });
+
+        assert_eq!(lowered, 8);
+        assert!(
+            !executed.iter().any(|query| query.contains("Signature::with_source_map_")),
+            "ordinary signature queries retained source maps: {executed:#?}"
+        );
+    });
+}
+
+#[test]
 fn typing_whitespace_inside_a_function_should_not_invalidate_types() {
     let (mut db, pos) = TestDB::with_position(
         "
@@ -84,7 +159,6 @@ fn foo() -> i32 {
                 "real_span_map",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
-                "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
                 "Body::of_",
                 "trait_environment_query",
@@ -127,7 +201,6 @@ fn foo() -> i32 {
                 "file_item_tree_query",
                 "real_span_map",
                 "AttrFlags::query_",
-                "FunctionSignature::with_source_map_",
                 "FunctionSignature::of_",
                 "Body::of_",
             ]
@@ -173,7 +246,6 @@ fn baz() -> i32 {
                 "real_span_map",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
-                "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
                 "Body::of_",
                 "trait_environment_query",
@@ -185,7 +257,6 @@ fn baz() -> i32 {
                 "body_upvars_mentioned",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
-                "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
                 "Body::of_",
                 "trait_environment_query",
@@ -195,7 +266,6 @@ fn baz() -> i32 {
                 "body_upvars_mentioned",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
-                "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
                 "Body::of_",
                 "trait_environment_query",
@@ -241,18 +311,15 @@ fn baz() -> i32 {
                 "file_item_tree_query",
                 "real_span_map",
                 "AttrFlags::query_",
-                "FunctionSignature::with_source_map_",
                 "FunctionSignature::of_",
                 "Body::of_",
                 "AttrFlags::query_",
-                "FunctionSignature::with_source_map_",
                 "FunctionSignature::of_",
                 "Body::of_",
                 "InferenceResult < 'db >::for_body_",
                 "ExprScopes::body_expr_scopes_",
                 "body_upvars_mentioned",
                 "AttrFlags::query_",
-                "FunctionSignature::with_source_map_",
                 "FunctionSignature::of_",
                 "Body::of_",
             ]
@@ -635,10 +702,8 @@ fn main() {
                 "ImplItems::of_",
                 "InferenceResult < 'db >::for_body_",
                 "TraitSignature::of_",
-                "TraitSignature::with_source_map_",
                 "AttrFlags::query_",
                 "FunctionSignature::of_",
-                "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
                 "Body::of_",
                 "trait_environment_query",
@@ -650,13 +715,11 @@ fn main() {
                 "body_upvars_mentioned",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
-                "FunctionSignature::with_source_map_",
                 "trait_environment_query",
                 "GenericPredicates::query_with_diagnostics_",
                 "fn_sig_for_fn",
                 "ExprScopes::body_expr_scopes_",
                 "StructSignature::of_",
-                "StructSignature::with_source_map_",
                 "AttrFlags::query_",
                 "GenericPredicates::query_with_diagnostics_",
                 "InherentImpls < 'db >::for_crate_",
@@ -728,9 +791,8 @@ fn main() {
                 "ImplItems::of_",
                 "InferenceResult < 'db >::for_body_",
                 "AttrFlags::query_",
-                "TraitSignature::with_source_map_",
+                "TraitSignature::of_",
                 "AttrFlags::query_",
-                "FunctionSignature::with_source_map_",
                 "FunctionSignature::of_",
                 "Body::of_",
                 "crate_lang_items",
@@ -739,11 +801,11 @@ fn main() {
                 "fn_sig_for_fn",
                 "body_upvars_mentioned",
                 "InferenceResult < 'db >::for_body_",
-                "FunctionSignature::with_source_map_",
+                "FunctionSignature::of_",
                 "GenericPredicates::query_with_diagnostics_",
                 "fn_sig_for_fn",
                 "ExprScopes::body_expr_scopes_",
-                "StructSignature::with_source_map_",
+                "StructSignature::of_",
                 "AttrFlags::query_",
                 "GenericPredicates::query_with_diagnostics_",
                 "InherentImpls < 'db >::for_crate_",

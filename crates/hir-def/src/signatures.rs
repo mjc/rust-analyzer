@@ -78,7 +78,7 @@ bitflags! {
 impl StructSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: StructId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -86,6 +86,10 @@ impl StructSignature {
         db: &dyn SourceDatabase,
         id: StructId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: StructId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
         let InFile { file_id, value: source } = loc.source(db);
         let attrs = AttrFlags::query(db, id.into());
@@ -167,7 +171,7 @@ pub struct UnionSignature {
 impl UnionSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: UnionId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -175,6 +179,10 @@ impl UnionSignature {
         db: &dyn SourceDatabase,
         id: UnionId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: UnionId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
         let attrs = AttrFlags::query(db, id.into());
         let mut flags = StructFlags::empty();
@@ -243,7 +251,7 @@ pub struct EnumSignature {
 impl EnumSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: EnumId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -251,6 +259,10 @@ impl EnumSignature {
         db: &dyn SourceDatabase,
         id: EnumId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: EnumId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
         let attrs = AttrFlags::query(db, id.into());
         let mut flags = EnumFlags::empty();
@@ -325,7 +337,7 @@ pub struct ConstSignature {
 impl ConstSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: ConstId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -333,6 +345,10 @@ impl ConstSignature {
         db: &dyn SourceDatabase,
         id: ConstId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: ConstId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
 
         let module = loc.container.module(db);
@@ -393,7 +409,7 @@ pub struct StaticSignature {
 impl StaticSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: StaticId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -401,6 +417,10 @@ impl StaticSignature {
         db: &dyn SourceDatabase,
         id: StaticId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: StaticId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
 
         let module = loc.container.module(db);
@@ -540,7 +560,7 @@ pub struct TraitSignature {
 impl TraitSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: TraitId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -548,6 +568,10 @@ impl TraitSignature {
         db: &dyn SourceDatabase,
         id: TraitId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: TraitId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
 
         let mut flags = TraitFlags::empty();
@@ -628,7 +652,7 @@ pub struct FunctionSignature {
 impl FunctionSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: FunctionId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -636,6 +660,10 @@ impl FunctionSignature {
         db: &dyn SourceDatabase,
         id: FunctionId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: FunctionId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
         let module = loc.container.module(db);
 
@@ -814,7 +842,7 @@ pub struct TypeAliasSignature {
 impl TypeAliasSignature {
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, id: TypeAliasId) -> Arc<Self> {
-        Self::with_source_map(db, id).0.clone()
+        Self::lower(db, id).0
     }
 
     #[salsa::tracked(returns(ref))]
@@ -822,6 +850,10 @@ impl TypeAliasSignature {
         db: &dyn SourceDatabase,
         id: TypeAliasId,
     ) -> (Arc<Self>, ExpressionStoreSourceMap) {
+        Self::lower(db, id)
+    }
+
+    fn lower(db: &dyn SourceDatabase, id: TypeAliasId) -> (Arc<Self>, ExpressionStoreSourceMap) {
         let loc = id.lookup(db);
 
         let mut flags = TypeAliasFlags::empty();
