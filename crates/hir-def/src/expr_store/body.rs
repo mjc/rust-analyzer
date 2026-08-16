@@ -91,49 +91,53 @@ impl Body {
         db: &dyn SourceDatabase,
         def: DefWithBodyId,
     ) -> (Arc<Body>, BodySourceMap) {
-        let _p = tracing::info_span!("body_with_source_map_query").entered();
-        let mut params = None;
-
-        let mut is_async_fn = false;
-        let mut is_gen_fn = false;
-        let InFile { file_id, value: body } = {
-            match def {
-                DefWithBodyId::FunctionId(f) => {
-                    let f = f.lookup(db);
-                    let src = f.source(db);
-                    params = src.value.param_list();
-                    is_async_fn = src.value.async_token().is_some();
-                    is_gen_fn = src.value.gen_token().is_some();
-                    src.map(|it| it.body().map(ast::Expr::from))
-                }
-                DefWithBodyId::ConstId(c) => {
-                    let c = c.lookup(db);
-                    let src = c.source(db);
-                    src.map(|it| it.body())
-                }
-                DefWithBodyId::StaticId(s) => {
-                    let s = s.lookup(db);
-                    let src = s.source(db);
-                    src.map(|it| it.body())
-                }
-                DefWithBodyId::VariantId(v) => {
-                    let s = v.lookup(db);
-                    let src = s.source(db);
-                    src.map(|it| it.const_arg()?.expr())
-                }
-            }
-        };
-        let module = def.module(db);
-        let (body, source_map) =
-            lower_body(db, def, file_id, module, params, body, is_async_fn, is_gen_fn);
-
-        (Arc::new(body), source_map)
+        lower_body_query(db, def)
     }
 
     #[salsa::tracked(returns(deref))]
     pub fn of(db: &dyn SourceDatabase, def: DefWithBodyId) -> Arc<Body> {
-        Self::with_source_map(db, def).0.clone()
+        lower_body_query(db, def).0
     }
+}
+
+fn lower_body_query(db: &dyn SourceDatabase, def: DefWithBodyId) -> (Arc<Body>, BodySourceMap) {
+    let _p = tracing::info_span!("body_with_source_map_query").entered();
+    let mut params = None;
+
+    let mut is_async_fn = false;
+    let mut is_gen_fn = false;
+    let InFile { file_id, value: body } = {
+        match def {
+            DefWithBodyId::FunctionId(f) => {
+                let f = f.lookup(db);
+                let src = f.source(db);
+                params = src.value.param_list();
+                is_async_fn = src.value.async_token().is_some();
+                is_gen_fn = src.value.gen_token().is_some();
+                src.map(|it| it.body().map(ast::Expr::from))
+            }
+            DefWithBodyId::ConstId(c) => {
+                let c = c.lookup(db);
+                let src = c.source(db);
+                src.map(|it| it.body())
+            }
+            DefWithBodyId::StaticId(s) => {
+                let s = s.lookup(db);
+                let src = s.source(db);
+                src.map(|it| it.body())
+            }
+            DefWithBodyId::VariantId(v) => {
+                let s = v.lookup(db);
+                let src = s.source(db);
+                src.map(|it| it.const_arg()?.expr())
+            }
+        }
+    };
+    let module = def.module(db);
+    let (body, source_map) =
+        lower_body(db, def, file_id, module, params, body, is_async_fn, is_gen_fn);
+
+    (Arc::new(body), source_map)
 }
 
 impl Body {
