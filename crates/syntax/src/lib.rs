@@ -66,6 +66,11 @@ pub use rowan::{
 pub use rustc_literal_escaper as unescape;
 pub use smol_str::{SmolStr, SmolStrBuilder, ToSmolStr, format_smolstr};
 
+#[doc(hidden)]
+pub fn trim_memory() {
+    rowan::trim_memory();
+}
+
 /// `Parse` is the result of the parsing: a syntax tree and a collection of
 /// errors.
 ///

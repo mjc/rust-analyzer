@@ -282,6 +282,7 @@ impl AnalysisHost {
         self.db.synthetic_write(Durability::LOW);
         // SAFETY: `trigger_lru_eviction` triggers cancellation, so all running queries were canceled.
         unsafe { hir::collect_ty_garbage() };
+        syntax::trim_memory();
         profile::trim_memory();
         true
     }

@@ -2420,7 +2420,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "rowan"
 version = "0.17.0"
-source = "git+https://github.com/mjc/rowan?branch=mjc%2Fstatic-token-sharing#be82ed501943baa41edb38a64ef404c62c032e5b"
+source = "git+https://github.com/mjc/rowan?branch=mjc%2Fstatic-token-sharing#8586a33c68caf246c00490726e6157a2f21641c6"
 dependencies = [
  "countme",
  "hashbrown 0.14.5",
