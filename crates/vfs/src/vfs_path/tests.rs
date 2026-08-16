@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn vfs_path_is_pointer_sized() {
+    assert_eq!(std::mem::size_of::<VfsPath>(), std::mem::size_of::<usize>());
+}
+
+#[test]
+fn popping_a_clone_does_not_change_the_original() {
+    let original = VfsPath::new_virtual_path("/foo/bar".to_owned());
+    let mut parent = original.clone();
+
+    assert!(parent.pop());
+    assert_eq!(original, VfsPath::new_virtual_path("/foo/bar".to_owned()));
+    assert_eq!(parent, VfsPath::new_virtual_path("/foo".to_owned()));
+}
+
+#[test]
 fn virtual_path_starts_with_is_component_based() {
     let path = |path: &str| VfsPath::new_virtual_path(path.to_owned());
 

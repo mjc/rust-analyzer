@@ -1,5 +1,5 @@
 //! Abstract-ish representation of paths for VFS.
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use paths::{AbsPath, AbsPathBuf, RelPath};
 
@@ -10,7 +10,7 @@ use paths::{AbsPath, AbsPathBuf, RelPath};
 ///
 /// [`Vfs`]: crate::Vfs
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct VfsPath(VfsPathRepr);
+pub struct VfsPath(Arc<VfsPathRepr>);
 
 impl VfsPath {
     /// Creates an "in-memory" path from `/`-separated string.
@@ -22,7 +22,7 @@ impl VfsPath {
     /// Panics if `path` does not start with `'/'`.
     pub fn new_virtual_path(path: String) -> VfsPath {
         assert!(path.starts_with('/'));
-        VfsPath(VfsPathRepr::VirtualPath(VirtualPath(path)))
+        VfsPath(Arc::new(VfsPathRepr::VirtualPath(VirtualPath(path))))
     }
 
     /// Create a path from string. Input should be a string representation of
@@ -33,14 +33,14 @@ impl VfsPath {
 
     /// Returns the `AbsPath` representation of `self` if `self` is on the file system.
     pub fn as_path(&self) -> Option<&AbsPath> {
-        match &self.0 {
+        match self.0.as_ref() {
             VfsPathRepr::PathBuf(it) => Some(it.as_path()),
             VfsPathRepr::VirtualPath(_) => None,
         }
     }
 
     pub fn into_abs_path(self) -> Option<AbsPathBuf> {
-        match self.0 {
+        match Arc::unwrap_or_clone(self.0) {
             VfsPathRepr::PathBuf(it) => Some(it),
             VfsPathRepr::VirtualPath(_) => None,
         }
@@ -48,14 +48,14 @@ impl VfsPath {
 
     /// Creates a new `VfsPath` with `path` adjoined to `self`.
     pub fn join(&self, path: &str) -> Option<VfsPath> {
-        match &self.0 {
+        match self.0.as_ref() {
             VfsPathRepr::PathBuf(it) => {
                 let res = it.join(path).normalize();
-                Some(VfsPath(VfsPathRepr::PathBuf(res)))
+                Some(VfsPath(Arc::new(VfsPathRepr::PathBuf(res))))
             }
             VfsPathRepr::VirtualPath(it) => {
                 let res = it.join(path)?;
-                Some(VfsPath(VfsPathRepr::VirtualPath(res)))
+                Some(VfsPath(Arc::new(VfsPathRepr::VirtualPath(res))))
             }
         }
     }
@@ -76,7 +76,7 @@ impl VfsPath {
     /// assert!(!path.pop());
     /// ```
     pub fn pop(&mut self) -> bool {
-        match &mut self.0 {
+        match Arc::make_mut(&mut self.0) {
             VfsPathRepr::PathBuf(it) => it.pop(),
             VfsPathRepr::VirtualPath(it) => it.pop(),
         }
@@ -84,7 +84,7 @@ impl VfsPath {
 
     /// Returns `true` if `other` is a prefix of `self`.
     pub fn starts_with(&self, other: &VfsPath) -> bool {
-        match (&self.0, &other.0) {
+        match (self.0.as_ref(), other.0.as_ref()) {
             (VfsPathRepr::PathBuf(lhs), VfsPathRepr::PathBuf(rhs)) => lhs.starts_with(rhs),
             (VfsPathRepr::VirtualPath(lhs), VfsPathRepr::VirtualPath(rhs)) => lhs.starts_with(rhs),
             (VfsPathRepr::PathBuf(_) | VfsPathRepr::VirtualPath(_), _) => false,
@@ -92,7 +92,7 @@ impl VfsPath {
     }
 
     pub fn strip_prefix(&self, other: &VfsPath) -> Option<&RelPath> {
-        match (&self.0, &other.0) {
+        match (self.0.as_ref(), other.0.as_ref()) {
             (VfsPathRepr::PathBuf(lhs), VfsPathRepr::PathBuf(rhs)) => lhs.strip_prefix(rhs),
             (VfsPathRepr::VirtualPath(lhs), VfsPathRepr::VirtualPath(rhs)) => lhs.strip_prefix(rhs),
             (VfsPathRepr::PathBuf(_) | VfsPathRepr::VirtualPath(_), _) => None,
@@ -109,7 +109,7 @@ impl VfsPath {
 
     /// Returns `self`'s base name and file extension.
     pub fn name_and_extension(&self) -> Option<(&str, Option<&str>)> {
-        match &self.0 {
+        match self.0.as_ref() {
             VfsPathRepr::PathBuf(p) => p.name_and_extension(),
             VfsPathRepr::VirtualPath(p) => p.name_and_extension(),
         }
@@ -124,12 +124,12 @@ impl VfsPath {
     ///
     /// Note that this encoding is dependent on the operating system.
     pub(crate) fn encode(&self, buf: &mut Vec<u8>) {
-        let tag = match &self.0 {
+        let tag = match self.0.as_ref() {
             VfsPathRepr::PathBuf(_) => 0,
             VfsPathRepr::VirtualPath(_) => 1,
         };
         buf.push(tag);
-        match &self.0 {
+        match self.0.as_ref() {
             VfsPathRepr::PathBuf(path) => {
                 #[cfg(windows)]
                 {
@@ -288,13 +288,13 @@ enum VfsPathRepr {
 
 impl From<AbsPathBuf> for VfsPath {
     fn from(v: AbsPathBuf) -> Self {
-        VfsPath(VfsPathRepr::PathBuf(v.normalize()))
+        VfsPath(Arc::new(VfsPathRepr::PathBuf(v.normalize())))
     }
 }
 
 impl fmt::Display for VfsPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
+        match self.0.as_ref() {
             VfsPathRepr::PathBuf(it) => it.fmt(f),
             VfsPathRepr::VirtualPath(VirtualPath(it)) => it.fmt(f),
         }
@@ -303,7 +303,7 @@ impl fmt::Display for VfsPath {
 
 impl fmt::Debug for VfsPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
+        fmt::Debug::fmt(self.0.as_ref(), f)
     }
 }
 
@@ -318,7 +318,7 @@ impl fmt::Debug for VfsPathRepr {
 
 impl PartialEq<AbsPath> for VfsPath {
     fn eq(&self, other: &AbsPath) -> bool {
-        match &self.0 {
+        match self.0.as_ref() {
             VfsPathRepr::PathBuf(lhs) => lhs == other,
             VfsPathRepr::VirtualPath(_) => false,
         }
