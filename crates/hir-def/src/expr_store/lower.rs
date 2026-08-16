@@ -864,7 +864,6 @@ impl<'db> ExprCollector<'db> {
         let id = self.store.lifetimes.alloc(lifetime_ref);
         let ptr = self.expander.in_file(node);
         self.store.lifetime_map_back.insert(id, ptr);
-        self.store.lifetime_map.insert(ptr, id);
         id
     }
 
