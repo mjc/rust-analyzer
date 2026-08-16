@@ -20,6 +20,7 @@ use thin_vec::ThinVec;
 use crate::{
     AdtId, BuiltinDeriveImplId, BuiltinType, ConstId, ExternBlockId, ExternCrateId, FxIndexMap,
     HasModule, ImplId, Lookup, MacroCallStyles, MacroId, ModuleDefId, ModuleId, TraitId, UseId,
+    builtin_type::{BuiltinFloat, BuiltinInt, BuiltinUint},
     per_ns::{Item, MacrosItem, PerNs, TypesItem, ValuesItem},
     visibility::Visibility,
 };
@@ -110,9 +111,150 @@ pub struct GlobId {
     pub idx: Idx<ast::UseTree>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ScopeDefId(u64);
+
+impl ScopeDefId {
+    // Modules are tracked and can have nonzero generations, so preserve their full Salsa ID.
+    // The other definitions are permanent interned IDs; tag their index with Salsa's invalid-index
+    // niche, which keeps the two representations disjoint without losing any ID bits.
+    const COMPACT_START: u32 = salsa::Id::MAX_U32 + 1;
+    const FUNCTION: u32 = 0;
+    const STRUCT: u32 = 1;
+    const UNION: u32 = 2;
+    const ENUM: u32 = 3;
+    const ENUM_VARIANT: u32 = 4;
+    const CONST: u32 = 5;
+    const STATIC: u32 = 6;
+    const TRAIT: u32 = 7;
+    const TYPE_ALIAS: u32 = 8;
+    const BUILTIN: u32 = 9;
+    const MACRO2: u32 = 10;
+    const MACRO_RULES: u32 = 11;
+    const PROC_MACRO: u32 = 12;
+
+    fn new(def: ModuleDefId) -> Self {
+        match def {
+            ModuleDefId::ModuleId(id) => Self(id.as_id().as_bits()),
+            ModuleDefId::FunctionId(id) => Self::from_id(Self::FUNCTION, id),
+            ModuleDefId::AdtId(AdtId::StructId(id)) => Self::from_id(Self::STRUCT, id),
+            ModuleDefId::AdtId(AdtId::UnionId(id)) => Self::from_id(Self::UNION, id),
+            ModuleDefId::AdtId(AdtId::EnumId(id)) => Self::from_id(Self::ENUM, id),
+            ModuleDefId::EnumVariantId(id) => Self::from_id(Self::ENUM_VARIANT, id),
+            ModuleDefId::ConstId(id) => Self::from_id(Self::CONST, id),
+            ModuleDefId::StaticId(id) => Self::from_id(Self::STATIC, id),
+            ModuleDefId::TraitId(id) => Self::from_id(Self::TRAIT, id),
+            ModuleDefId::TypeAliasId(id) => Self::from_id(Self::TYPE_ALIAS, id),
+            ModuleDefId::BuiltinType(builtin) => {
+                Self(Self::pack(Self::BUILTIN, Self::builtin_index(builtin)))
+            }
+            ModuleDefId::MacroId(MacroId::Macro2Id(id)) => Self::from_id(Self::MACRO2, id),
+            ModuleDefId::MacroId(MacroId::MacroRulesId(id)) => Self::from_id(Self::MACRO_RULES, id),
+            ModuleDefId::MacroId(MacroId::ProcMacroId(id)) => Self::from_id(Self::PROC_MACRO, id),
+        }
+    }
+
+    fn get(self) -> ModuleDefId {
+        if self.0 as u32 <= salsa::Id::MAX_U32 {
+            return ModuleId::from_id(salsa::Id::from_bits(self.0)).into();
+        }
+        let id = || salsa::Id::from_bits(u64::from(self.payload()));
+        match self.kind() {
+            Self::FUNCTION => crate::FunctionId::from_id(id()).into(),
+            Self::STRUCT => crate::StructId::from_id(id()).into(),
+            Self::UNION => crate::UnionId::from_id(id()).into(),
+            Self::ENUM => crate::EnumId::from_id(id()).into(),
+            Self::ENUM_VARIANT => crate::EnumVariantId::from_id(id()).into(),
+            Self::CONST => ConstId::from_id(id()).into(),
+            Self::STATIC => crate::StaticId::from_id(id()).into(),
+            Self::TRAIT => TraitId::from_id(id()).into(),
+            Self::TYPE_ALIAS => crate::TypeAliasId::from_id(id()).into(),
+            Self::BUILTIN => ModuleDefId::BuiltinType(Self::builtin(self.payload())),
+            Self::MACRO2 => crate::Macro2Id::from_id(id()).into(),
+            Self::MACRO_RULES => crate::MacroRulesId::from_id(id()).into(),
+            Self::PROC_MACRO => crate::ProcMacroId::from_id(id()).into(),
+            kind => unreachable!("invalid compact module definition kind {kind}"),
+        }
+    }
+
+    fn from_id(kind: u32, id: impl AsId) -> Self {
+        let id = id.as_id();
+        assert_eq!(id.generation(), 0, "interned definition ID unexpectedly has a generation");
+        let payload = id.index().checked_add(1).expect("interned definition ID exceeds u32");
+        Self(Self::pack(kind, payload))
+    }
+
+    const fn pack(kind: u32, payload: u32) -> u64 {
+        (payload as u64) << 32 | (Self::COMPACT_START + kind) as u64
+    }
+
+    const fn kind(self) -> u32 {
+        self.0 as u32 - Self::COMPACT_START
+    }
+
+    const fn payload(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+
+    const fn builtin_index(builtin: BuiltinType) -> u32 {
+        match builtin {
+            BuiltinType::Char => 0,
+            BuiltinType::Bool => 1,
+            BuiltinType::Str => 2,
+            BuiltinType::Int(BuiltinInt::Isize) => 3,
+            BuiltinType::Int(BuiltinInt::I8) => 4,
+            BuiltinType::Int(BuiltinInt::I16) => 5,
+            BuiltinType::Int(BuiltinInt::I32) => 6,
+            BuiltinType::Int(BuiltinInt::I64) => 7,
+            BuiltinType::Int(BuiltinInt::I128) => 8,
+            BuiltinType::Uint(BuiltinUint::Usize) => 9,
+            BuiltinType::Uint(BuiltinUint::U8) => 10,
+            BuiltinType::Uint(BuiltinUint::U16) => 11,
+            BuiltinType::Uint(BuiltinUint::U32) => 12,
+            BuiltinType::Uint(BuiltinUint::U64) => 13,
+            BuiltinType::Uint(BuiltinUint::U128) => 14,
+            BuiltinType::Float(BuiltinFloat::F16) => 15,
+            BuiltinType::Float(BuiltinFloat::F32) => 16,
+            BuiltinType::Float(BuiltinFloat::F64) => 17,
+            BuiltinType::Float(BuiltinFloat::F128) => 18,
+        }
+    }
+
+    const fn builtin(index: u32) -> BuiltinType {
+        match index {
+            0 => BuiltinType::Char,
+            1 => BuiltinType::Bool,
+            2 => BuiltinType::Str,
+            3 => BuiltinType::Int(BuiltinInt::Isize),
+            4 => BuiltinType::Int(BuiltinInt::I8),
+            5 => BuiltinType::Int(BuiltinInt::I16),
+            6 => BuiltinType::Int(BuiltinInt::I32),
+            7 => BuiltinType::Int(BuiltinInt::I64),
+            8 => BuiltinType::Int(BuiltinInt::I128),
+            9 => BuiltinType::Uint(BuiltinUint::Usize),
+            10 => BuiltinType::Uint(BuiltinUint::U8),
+            11 => BuiltinType::Uint(BuiltinUint::U16),
+            12 => BuiltinType::Uint(BuiltinUint::U32),
+            13 => BuiltinType::Uint(BuiltinUint::U64),
+            14 => BuiltinType::Uint(BuiltinUint::U128),
+            15 => BuiltinType::Float(BuiltinFloat::F16),
+            16 => BuiltinType::Float(BuiltinFloat::F32),
+            17 => BuiltinType::Float(BuiltinFloat::F64),
+            18 => BuiltinType::Float(BuiltinFloat::F128),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl fmt::Debug for ScopeDefId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScopeValuesItem {
-    def: ModuleDefId,
+    def: ScopeDefId,
     vis: ScopeVisibility,
     import: ScopeImportId,
 }
@@ -229,7 +371,7 @@ impl ScopeImportId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScopeTypesItem {
-    def: ModuleDefId,
+    def: ScopeDefId,
     vis: ScopeVisibility,
     import: ScopeImportId,
 }
@@ -241,12 +383,12 @@ impl ScopeValuesItem {
         imports: &mut ThinVec<ScopeImportOrExternCrate>,
     ) -> Self {
         let import = ScopeImportId::new(item.import.map(Into::into), imports);
-        Self { def: item.def, vis, import }
+        Self { def: ScopeDefId::new(item.def), vis, import }
     }
 
     fn get(self, visibilities: &[Visibility], imports: &[ScopeImportOrExternCrate]) -> ValuesItem {
         ValuesItem {
-            def: self.def,
+            def: self.def.get(),
             vis: self.vis.get(visibilities),
             import: self.import.get(imports).map(|import| {
                 import.import_or_glob().expect("value namespace contains an extern-crate import")
@@ -262,12 +404,12 @@ impl ScopeTypesItem {
         imports: &mut ThinVec<ScopeImportOrExternCrate>,
     ) -> Self {
         let import = ScopeImportId::new(item.import, imports);
-        Self { def: item.def, vis, import }
+        Self { def: ScopeDefId::new(item.def), vis, import }
     }
 
     fn get(self, visibilities: &[Visibility], imports: &[ScopeImportOrExternCrate]) -> TypesItem {
         TypesItem {
-            def: self.def,
+            def: self.def.get(),
             vis: self.vis.get(visibilities),
             import: self.import.get(imports),
         }
@@ -276,9 +418,10 @@ impl ScopeTypesItem {
 
 const _: () = assert!(std::mem::size_of::<ScopeVisibility>() == 4);
 const _: () = assert!(std::mem::size_of::<ScopeImportId>() == 4);
-const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 24);
+const _: () = assert!(ScopeDefId::PROC_MACRO <= u32::MAX - salsa::Id::MAX_U32);
+const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 16);
 const _: () = assert!(std::mem::size_of::<ScopeImportOrExternCrate>() == 12);
-const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 24);
+const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 16);
 
 #[derive(Debug)]
 enum ScopeMap<V> {
@@ -560,12 +703,42 @@ mod tests {
 
     #[test]
     fn values_scope_entry_is_compact() {
-        assert_eq!(std::mem::size_of::<ScopeValuesItem>(), 24);
+        assert_eq!(std::mem::size_of::<ScopeValuesItem>(), 16);
     }
 
     #[test]
     fn type_scope_entry_is_compact() {
-        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 24);
+        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 16);
+    }
+
+    #[test]
+    fn compact_scope_definitions_roundtrip_every_kind() {
+        let id = salsa::Id::from_bits(42);
+        let mut definitions = vec![
+            ModuleDefId::ModuleId(ModuleId::from_id(id.with_generation(7))),
+            ModuleDefId::FunctionId(crate::FunctionId::from_id(id)),
+            ModuleDefId::AdtId(AdtId::StructId(crate::StructId::from_id(id))),
+            ModuleDefId::AdtId(AdtId::UnionId(crate::UnionId::from_id(id))),
+            ModuleDefId::AdtId(AdtId::EnumId(crate::EnumId::from_id(id))),
+            ModuleDefId::EnumVariantId(crate::EnumVariantId::from_id(id)),
+            ModuleDefId::ConstId(ConstId::from_id(id)),
+            ModuleDefId::StaticId(crate::StaticId::from_id(id)),
+            ModuleDefId::TraitId(TraitId::from_id(id)),
+            ModuleDefId::TypeAliasId(crate::TypeAliasId::from_id(id)),
+            ModuleDefId::MacroId(MacroId::Macro2Id(crate::Macro2Id::from_id(id))),
+            ModuleDefId::MacroId(MacroId::MacroRulesId(crate::MacroRulesId::from_id(id))),
+            ModuleDefId::MacroId(MacroId::ProcMacroId(crate::ProcMacroId::from_id(id))),
+        ];
+        definitions.extend(
+            BuiltinType::all_builtin_types()
+                .into_iter()
+                .map(|(_, builtin)| ModuleDefId::BuiltinType(builtin)),
+        );
+
+        assert_eq!(std::mem::size_of::<ScopeDefId>(), 8);
+        for definition in definitions {
+            assert_eq!(ScopeDefId::new(definition).get(), definition);
+        }
     }
 
     #[test]
@@ -906,7 +1079,7 @@ impl ItemScope {
     }
 
     pub(crate) fn modules_in_scope(&self) -> impl Iterator<Item = (ModuleId, Visibility)> + '_ {
-        self.types.values().filter_map(|ns| match ns.def {
+        self.types.values().filter_map(|ns| match ns.def.get() {
             ModuleDefId::ModuleId(module) => Some((module, ns.vis.get(&self.visibilities))),
             _ => None,
         })
@@ -939,7 +1112,7 @@ impl ItemScope {
     }
 
     pub(crate) fn type_(&self, name: &Name) -> Option<(ModuleDefId, Visibility)> {
-        self.types.get(name).map(|item| (item.def, item.vis.get(&self.visibilities)))
+        self.types.get(name).map(|item| (item.def.get(), item.vis.get(&self.visibilities)))
     }
 
     pub(crate) fn makro(&self, name: &Name) -> Option<MacroId> {
@@ -952,20 +1125,26 @@ impl ItemScope {
             ItemInNs::Macros(def) => self.macros.iter().find_map(|(name, other_def)| {
                 (other_def.def == def).then_some((name, other_def.vis, other_def.import.is_none()))
             }),
-            ItemInNs::Types(def) => self.types.iter().find_map(|(name, other_def)| {
-                (other_def.def == def).then_some((
-                    name,
-                    other_def.vis.get(&self.visibilities),
-                    other_def.import.is_none(),
-                ))
-            }),
-            ItemInNs::Values(def) => self.values.iter().find_map(|(name, other_def)| {
-                (other_def.def == def).then_some((
-                    name,
-                    other_def.vis.get(&self.visibilities),
-                    other_def.import.is_none(),
-                ))
-            }),
+            ItemInNs::Types(def) => {
+                let def = ScopeDefId::new(def);
+                self.types.iter().find_map(|(name, other_def)| {
+                    (other_def.def == def).then_some((
+                        name,
+                        other_def.vis.get(&self.visibilities),
+                        other_def.import.is_none(),
+                    ))
+                })
+            }
+            ItemInNs::Values(def) => {
+                let def = ScopeDefId::new(def);
+                self.values.iter().find_map(|(name, other_def)| {
+                    (other_def.def == def).then_some((
+                        name,
+                        other_def.vis.get(&self.visibilities),
+                        other_def.import.is_none(),
+                    ))
+                })
+            }
         }
     }
 
@@ -987,35 +1166,39 @@ impl ItemScope {
                     ))
                 })
                 .find_map(|(a, b, c)| cb(a, b, c)),
-            ItemInNs::Types(def) => self
-                .types
-                .iter()
-                .filter_map(|(name, other_def)| {
-                    (other_def.def == def).then_some((
-                        name,
-                        other_def.vis.get(&self.visibilities),
-                        other_def.import.is_none(),
-                    ))
-                })
-                .find_map(|(a, b, c)| cb(a, b, c)),
-            ItemInNs::Values(def) => self
-                .values
-                .iter()
-                .filter_map(|(name, other_def)| {
-                    (other_def.def == def).then_some((
-                        name,
-                        other_def.vis.get(&self.visibilities),
-                        other_def.import.is_none(),
-                    ))
-                })
-                .find_map(|(a, b, c)| cb(a, b, c)),
+            ItemInNs::Types(def) => {
+                let def = ScopeDefId::new(def);
+                self.types
+                    .iter()
+                    .filter_map(|(name, other_def)| {
+                        (other_def.def == def).then_some((
+                            name,
+                            other_def.vis.get(&self.visibilities),
+                            other_def.import.is_none(),
+                        ))
+                    })
+                    .find_map(|(a, b, c)| cb(a, b, c))
+            }
+            ItemInNs::Values(def) => {
+                let def = ScopeDefId::new(def);
+                self.values
+                    .iter()
+                    .filter_map(|(name, other_def)| {
+                        (other_def.def == def).then_some((
+                            name,
+                            other_def.vis.get(&self.visibilities),
+                            other_def.import.is_none(),
+                        ))
+                    })
+                    .find_map(|(a, b, c)| cb(a, b, c))
+            }
         }
     }
 
     pub(crate) fn traits(&self) -> impl Iterator<Item = TraitId> + '_ {
         self.types
             .values()
-            .filter_map(|def| match def.def {
+            .filter_map(|def| match def.def.get() {
                 ModuleDefId::TraitId(t) => Some(t),
                 _ => None,
             })
@@ -1054,7 +1237,7 @@ impl ItemScope {
     pub(crate) fn remove_from_value_ns(&mut self, name: &Name, def: ModuleDefId) {
         // predicate needed since a different item with the same name may be registered instead,
         // leading to `shift_remove` removing the wrong item.
-        if self.values.get(name).is_some_and(|entry| entry.def == def) {
+        if self.values.get(name).is_some_and(|entry| entry.def == ScopeDefId::new(def)) {
             let _ = self.values.shift_remove(name);
         }
     }
@@ -1511,14 +1694,14 @@ impl ItemScope {
     pub(crate) fn update_def_types(&mut self, name: &Name, def: ModuleDefId, vis: Visibility) {
         let vis = self.intern_visibility(vis);
         let res = self.types.get_mut(name).expect("tried to update def of non-existent type");
-        res.def = def;
+        res.def = ScopeDefId::new(def);
         res.vis = vis;
     }
 
     pub(crate) fn update_def_values(&mut self, name: &Name, def: ModuleDefId, vis: Visibility) {
         let vis = self.intern_visibility(vis);
         let res = self.values.get_mut(name).expect("tried to update def of non-existent value");
-        res.def = def;
+        res.def = ScopeDefId::new(def);
         res.vis = vis;
     }
 
