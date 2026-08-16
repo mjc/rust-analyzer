@@ -1,5 +1,9 @@
 //! Pre-type IR item generics
-use std::{ops, sync::LazyLock};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    ops,
+};
 
 use base_db::SourceDatabase;
 use hir_expand::name::Name;
@@ -159,24 +163,60 @@ pub enum GenericParamDataRef<'a> {
 }
 
 /// Data about the generic parameters of a function, struct, impl, etc.
-#[derive(PartialEq, Eq, Debug, Hash, Default)]
-pub struct GenericParams {
+#[derive(PartialEq, Eq, Debug, Hash)]
+struct GenericParamsData {
     pub(crate) type_or_consts: Arena<TypeOrConstParamData>,
     pub(crate) lifetimes: Arena<LifetimeParamData>,
     pub(crate) where_predicates: Box<[WherePredicate]>,
 }
 
+#[derive(Default)]
+pub struct GenericParams(Option<Box<GenericParamsData>>);
+
+static EMPTY: GenericParams = GenericParams(None);
+static EMPTY_TYPE_OR_CONSTS: Arena<TypeOrConstParamData> = Arena::new();
+static EMPTY_LIFETIMES: Arena<LifetimeParamData> = Arena::new();
+
+impl PartialEq for GenericParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_or_consts() == other.type_or_consts()
+            && self.lifetimes() == other.lifetimes()
+            && self.where_predicates() == other.where_predicates()
+    }
+}
+
+impl Eq for GenericParams {}
+
+impl Hash for GenericParams {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.type_or_consts().hash(state);
+        self.lifetimes().hash(state);
+        self.where_predicates().hash(state);
+    }
+}
+
+impl fmt::Debug for GenericParams {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GenericParams")
+            .field("type_or_consts", self.type_or_consts())
+            .field("lifetimes", self.lifetimes())
+            .field("where_predicates", &self.where_predicates())
+            .finish()
+    }
+}
+
 impl ops::Index<LocalTypeOrConstParamId> for GenericParams {
     type Output = TypeOrConstParamData;
     fn index(&self, index: LocalTypeOrConstParamId) -> &TypeOrConstParamData {
-        &self.type_or_consts[index]
+        &self.type_or_consts()[index]
     }
 }
 
 impl ops::Index<LocalLifetimeParamId> for GenericParams {
     type Output = LifetimeParamData;
     fn index(&self, index: LocalLifetimeParamId) -> &LifetimeParamData {
-        &self.lifetimes[index]
+        &self.lifetimes()[index]
     }
 }
 
@@ -190,12 +230,6 @@ pub enum WherePredicate {
     Lifetime { target: LifetimeRefId, bound: LifetimeRefId },
 }
 
-static EMPTY: LazyLock<GenericParams> = LazyLock::new(|| GenericParams {
-    type_or_consts: Arena::default(),
-    lifetimes: Arena::default(),
-    where_predicates: Box::default(),
-});
-
 impl GenericParams {
     /// The index of the self param in the generic of the non-parent definition.
     pub const SELF_PARAM_ID_IN_SELF: la_arena::Idx<TypeOrConstParamData> =
@@ -203,7 +237,27 @@ impl GenericParams {
 
     #[inline]
     pub fn empty() -> &'static GenericParams {
-        LazyLock::force(&EMPTY)
+        &EMPTY
+    }
+
+    pub(crate) fn new(
+        type_or_consts: Arena<TypeOrConstParamData>,
+        lifetimes: Arena<LifetimeParamData>,
+        where_predicates: Box<[WherePredicate]>,
+    ) -> Self {
+        if type_or_consts.is_empty() && lifetimes.is_empty() && where_predicates.is_empty() {
+            Self(None)
+        } else {
+            Self(Some(Box::new(GenericParamsData { type_or_consts, lifetimes, where_predicates })))
+        }
+    }
+
+    fn type_or_consts(&self) -> &Arena<TypeOrConstParamData> {
+        self.0.as_deref().map_or(&EMPTY_TYPE_OR_CONSTS, |data| &data.type_or_consts)
+    }
+
+    fn lifetimes(&self) -> &Arena<LifetimeParamData> {
+        self.0.as_deref().map_or(&EMPTY_LIFETIMES, |data| &data.lifetimes)
     }
 
     pub fn of(db: &dyn SourceDatabase, def: GenericDefId) -> &GenericParams {
@@ -301,22 +355,25 @@ impl GenericParams {
     /// Number of Generic parameters (type_or_consts + lifetimes)
     #[inline]
     pub fn len(&self) -> usize {
-        self.type_or_consts.len() + self.lifetimes.len()
+        self.type_or_consts().len() + self.lifetimes().len()
     }
 
     #[inline]
     pub fn len_lifetimes(&self) -> usize {
-        self.lifetimes.len() - self.len_late_bound_lifetimes()
+        self.lifetimes().len() - self.len_late_bound_lifetimes()
     }
 
     #[inline]
     pub fn len_late_bound_lifetimes(&self) -> usize {
-        self.lifetimes.iter().filter(|(_, p)| p.bound_type == LifetimeBoundType::LateBound).count()
+        self.lifetimes()
+            .iter()
+            .filter(|(_, p)| p.bound_type == LifetimeBoundType::LateBound)
+            .count()
     }
 
     #[inline]
     pub fn len_type_or_consts(&self) -> usize {
-        self.type_or_consts.len()
+        self.type_or_consts().len()
     }
 
     #[inline]
@@ -326,12 +383,12 @@ impl GenericParams {
 
     #[inline]
     pub fn has_no_predicates(&self) -> bool {
-        self.where_predicates.is_empty()
+        self.where_predicates().is_empty()
     }
 
     #[inline]
     pub fn where_predicates(&self) -> &[WherePredicate] {
-        &self.where_predicates
+        self.0.as_deref().map_or(&[], |data| &data.where_predicates)
     }
 
     /// Iterator of type_or_consts field
@@ -339,7 +396,7 @@ impl GenericParams {
     pub fn iter_type_or_consts(
         &self,
     ) -> impl DoubleEndedIterator<Item = (LocalTypeOrConstParamId, &TypeOrConstParamData)> {
-        self.type_or_consts.iter()
+        self.type_or_consts().iter()
     }
 
     /// Iterator of lifetimes field
@@ -347,25 +404,25 @@ impl GenericParams {
     pub fn iter_lt(
         &self,
     ) -> impl DoubleEndedIterator<Item = (LocalLifetimeParamId, &LifetimeParamData)> {
-        self.lifetimes.iter()
+        self.lifetimes().iter()
     }
 
     #[inline]
     pub fn iter_early_bound_lt(
         &self,
     ) -> impl DoubleEndedIterator<Item = (LocalLifetimeParamId, &LifetimeParamData)> {
-        self.lifetimes.iter().filter(|(_, p)| p.bound_type == LifetimeBoundType::EarlyBound)
+        self.lifetimes().iter().filter(|(_, p)| p.bound_type == LifetimeBoundType::EarlyBound)
     }
 
     #[inline]
     pub fn iter_late_bound_lt(
         &self,
     ) -> impl DoubleEndedIterator<Item = (LocalLifetimeParamId, &LifetimeParamData)> {
-        self.lifetimes.iter().filter(|(_, p)| p.bound_type == LifetimeBoundType::LateBound)
+        self.lifetimes().iter().filter(|(_, p)| p.bound_type == LifetimeBoundType::LateBound)
     }
 
     pub fn find_type_by_name(&self, name: &Name, parent: GenericDefId) -> Option<TypeParamId> {
-        self.type_or_consts.iter().find_map(|(id, p)| {
+        self.type_or_consts().iter().find_map(|(id, p)| {
             if p.name().as_ref() == Some(&name) && p.type_param().is_some() {
                 Some(TypeParamId::from_unchecked(TypeOrConstParamId { local_id: id, parent }))
             } else {
@@ -375,7 +432,7 @@ impl GenericParams {
     }
 
     pub fn find_const_by_name(&self, name: &Name, parent: GenericDefId) -> Option<ConstParamId> {
-        self.type_or_consts.iter().find_map(|(id, p)| {
+        self.type_or_consts().iter().find_map(|(id, p)| {
             if p.name().as_ref() == Some(&name) && p.const_param().is_some() {
                 Some(ConstParamId::from_unchecked(TypeOrConstParamId { local_id: id, parent }))
             } else {
@@ -386,11 +443,11 @@ impl GenericParams {
 
     #[inline]
     pub fn trait_self_param(&self) -> Option<LocalTypeOrConstParamId> {
-        if self.type_or_consts.is_empty() {
+        if self.type_or_consts().is_empty() {
             return None;
         }
         matches!(
-            self.type_or_consts[Self::SELF_PARAM_ID_IN_SELF],
+            self.type_or_consts()[Self::SELF_PARAM_ID_IN_SELF],
             TypeOrConstParamData::TypeParamData(TypeParamData {
                 provenance: TypeParamProvenance::TraitSelf,
                 ..
@@ -404,7 +461,7 @@ impl GenericParams {
         name: &Name,
         parent: GenericDefId,
     ) -> Option<LifetimeParamId> {
-        self.lifetimes.iter().find_map(|(id, p)| {
+        self.lifetimes().iter().find_map(|(id, p)| {
             if &p.name == name { Some(LifetimeParamId { local_id: id, parent }) } else { None }
         })
     }
@@ -425,5 +482,46 @@ impl GenericParams {
 
             (param_id == *lifetime_param_id).then(|| (idx, param_data.is_late_bound()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn generic_params_are_one_pointer_when_empty() {
+        assert_eq!(std::mem::size_of::<GenericParams>(), 8);
+        assert!(GenericParams::default().is_empty());
+        assert!(GenericParams::default().has_no_predicates());
+    }
+
+    #[test]
+    fn nonempty_generic_params_preserve_ids_and_iteration() {
+        let type_name = Name::new_symbol_root(intern::Symbol::intern("Type"));
+        let lifetime_name = Name::new_symbol_root(intern::Symbol::intern("lifetime"));
+        let mut type_or_consts = Arena::new();
+        let type_id = type_or_consts.alloc(
+            TypeParamData {
+                name: Some(type_name.clone()),
+                default: None,
+                provenance: TypeParamProvenance::TypeParamList,
+            }
+            .into(),
+        );
+        let mut lifetimes = Arena::new();
+        let lifetime_id = lifetimes.alloc(LifetimeParamData {
+            name: lifetime_name.clone(),
+            bound_type: LifetimeBoundType::EarlyBound,
+        });
+
+        let params = GenericParams::new(type_or_consts, lifetimes, Box::new([]));
+
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[type_id].name(), Some(&type_name));
+        assert_eq!(params[lifetime_id].name, lifetime_name);
+        assert_eq!(params.iter_type_or_consts().map(|(id, _)| id).collect::<Vec<_>>(), [type_id]);
+        assert_eq!(params.iter_lt().map(|(id, _)| id).collect::<Vec<_>>(), [lifetime_id]);
     }
 }

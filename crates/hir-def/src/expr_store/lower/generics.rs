@@ -89,11 +89,7 @@ impl GenericParamsCollector {
 
         lifetimes.shrink_to_fit();
         type_or_consts.shrink_to_fit();
-        GenericParams {
-            type_or_consts,
-            lifetimes,
-            where_predicates: where_predicates.into_boxed_slice(),
-        }
+        GenericParams::new(type_or_consts, lifetimes, where_predicates.into_boxed_slice())
     }
 
     fn lower_param_list(&mut self, ec: &mut ExprCollector<'_>, params: ast::GenericParamList) {

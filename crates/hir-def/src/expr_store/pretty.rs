@@ -330,10 +330,10 @@ fn print_where_clauses(
     generic_params: &GenericParams,
     p: &mut Printer<'_>,
 ) {
-    if !generic_params.where_predicates.is_empty() {
+    if !generic_params.where_predicates().is_empty() {
         w!(p, "\nwhere\n");
         p.indented(|p| {
-            for (i, pred) in generic_params.where_predicates.iter().enumerate() {
+            for (i, pred) in generic_params.where_predicates().iter().enumerate() {
                 if i != 0 {
                     w!(p, ",\n");
                 }
