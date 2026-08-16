@@ -527,9 +527,9 @@ fn match_loop_inner<'t>(
                     }
                 }
             }
-            OpDelimited::Op(Op::Literal(lhs)) => {
+            OpDelimited::Op(Op::Literal { text_and_suffix, span, kind, suffix_len }) => {
                 if let Ok(rhs) = src.clone().expect_leaf() {
-                    if matches!(&rhs, tt::Leaf::Literal(it) if it.text_and_suffix == lhs.text_and_suffix)
+                    if matches!(&rhs, tt::Leaf::Literal(it) if it.text_and_suffix == *text_and_suffix)
                     {
                         item.dot.next();
                     } else {
@@ -540,6 +540,12 @@ fn match_loop_inner<'t>(
                         item.is_error = true;
                     }
                 } else {
+                    let lhs = tt::Literal {
+                        text_and_suffix: text_and_suffix.clone(),
+                        span: *span,
+                        kind: *kind,
+                        suffix_len: *suffix_len,
+                    };
                     res.add_err(ExpandError::binding_error(
                         src.clone().next().map_or(delim_span.close, |it| it.first_span()),
                         format!("expected literal: `{lhs}`"),
@@ -548,9 +554,9 @@ fn match_loop_inner<'t>(
                 }
                 try_push!(next_items, item);
             }
-            OpDelimited::Op(Op::Ident(lhs)) => {
+            OpDelimited::Op(Op::Ident { sym, span, is_raw }) => {
                 if let Ok(rhs) = src.clone().expect_leaf() {
-                    if matches!(&rhs, tt::Leaf::Ident(it) if it.sym == lhs.sym) {
+                    if matches!(&rhs, tt::Leaf::Ident(it) if it.sym == *sym) {
                         item.dot.next();
                     } else {
                         res.add_err(ExpandError::new(
@@ -560,6 +566,7 @@ fn match_loop_inner<'t>(
                         item.is_error = true;
                     }
                 } else {
+                    let lhs = tt::Ident { sym: sym.clone(), span: *span, is_raw: *is_raw };
                     res.add_err(ExpandError::binding_error(
                         src.clone().next().map_or(delim_span.close, |it| it.first_span()),
                         format!("expected ident: `{lhs}`"),
@@ -882,7 +889,7 @@ fn collect_vars(collector_fun: &mut impl FnMut(Symbol), pattern: &MetaTemplate) 
             Op::Var { name, .. } => collector_fun(name.clone()),
             Op::Subtree { tokens, .. } => collect_vars(collector_fun, tokens),
             Op::Repeat { tokens, .. } => collect_vars(collector_fun, tokens),
-            Op::Literal(_) | Op::Ident(_) | Op::Punct(_) => {}
+            Op::Literal { .. } | Op::Ident { .. } | Op::Punct(_) => {}
             Op::Ignore { .. }
             | Op::Index { .. }
             | Op::Count { .. }

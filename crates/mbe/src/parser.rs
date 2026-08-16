@@ -100,9 +100,21 @@ pub(crate) enum Op {
     Concat { payload: Box<ConcatOp> },
     Repeat { tokens: MetaTemplate, kind: RepeatKind, separator: Option<Arc<Separator>> },
     Subtree { tokens: MetaTemplate, delimiter: Box<tt::Delimiter> },
-    Literal(tt::Literal),
+    Literal { text_and_suffix: Symbol, span: Span, kind: tt::LitKind, suffix_len: u8 },
     Punct(Box<[tt::Punct]>),
-    Ident(tt::Ident),
+    Ident { sym: Symbol, span: Span, is_raw: tt::IdentIsRaw },
+}
+
+impl Op {
+    fn from_literal(literal: tt::Literal) -> Self {
+        let tt::Literal { text_and_suffix, span, kind, suffix_len } = literal;
+        Self::Literal { text_and_suffix, span, kind, suffix_len }
+    }
+
+    fn from_ident(ident: tt::Ident) -> Self {
+        let tt::Ident { sym, span, is_raw } = ident;
+        Self::Ident { sym, span, is_raw }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,11 +245,11 @@ fn next_op(
                 TtElement::Leaf(leaf) => match leaf {
                     tt::Leaf::Ident(ident) if ident.sym == sym::crate_ => {
                         // We simply produce identifier `$crate` here. And it will be resolved when lowering ast to Path.
-                        Op::Ident(tt::Ident {
+                        Op::Ident {
                             sym: sym::dollar_crate,
                             span: ident.span,
                             is_raw: tt::IdentIsRaw::No,
-                        })
+                        }
                     }
                     tt::Leaf::Ident(ident) => {
                         let kind = eat_fragment_kind(edition, src, mode)?;
@@ -268,12 +280,12 @@ fn next_op(
 
         TtElement::Leaf(tt::Leaf::Literal(it)) => {
             src.next().expect("first token already peeked");
-            Op::Literal(it.clone())
+            Op::from_literal(it.clone())
         }
 
         TtElement::Leaf(tt::Leaf::Ident(it)) => {
             src.next().expect("first token already peeked");
-            Op::Ident(it.clone())
+            Op::from_ident(it.clone())
         }
 
         TtElement::Leaf(tt::Leaf::Punct(_)) => {

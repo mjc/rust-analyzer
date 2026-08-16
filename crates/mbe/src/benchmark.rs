@@ -169,8 +169,19 @@ fn invocation_fixtures(
                 None => (),
                 Some(kind) => panic!("Unhandled kind {kind:?}"),
             },
-            Op::Literal(it) => builder.push(tt::Leaf::from(it.clone())),
-            Op::Ident(it) => builder.push(tt::Leaf::from(it.clone())),
+            Op::Literal { text_and_suffix, span, kind, suffix_len } => {
+                builder.push(tt::Leaf::from(tt::Literal {
+                    text_and_suffix: text_and_suffix.clone(),
+                    span: *span,
+                    kind: *kind,
+                    suffix_len: *suffix_len,
+                }));
+            }
+            Op::Ident { sym, span, is_raw } => builder.push(tt::Leaf::from(tt::Ident {
+                sym: sym.clone(),
+                span: *span,
+                is_raw: *is_raw,
+            })),
             Op::Punct(puncts) => {
                 for punct in puncts.iter() {
                     builder.push(tt::Leaf::from(*punct));

@@ -173,16 +173,21 @@ fn expand_subtree(
     let mut err = None;
     'ops: for op in template.iter() {
         match op {
-            Op::Literal(it) => builder.push(tt::Leaf::from({
-                let mut it = it.clone();
-                marker(&mut it.span);
-                it
-            })),
-            Op::Ident(it) => builder.push(tt::Leaf::from({
-                let mut it = it.clone();
-                marker(&mut it.span);
-                it
-            })),
+            Op::Literal { text_and_suffix, span, kind, suffix_len } => {
+                let mut span = *span;
+                marker(&mut span);
+                builder.push(tt::Leaf::from(tt::Literal {
+                    text_and_suffix: text_and_suffix.clone(),
+                    span,
+                    kind: *kind,
+                    suffix_len: *suffix_len,
+                }));
+            }
+            Op::Ident { sym, span, is_raw } => {
+                let mut span = *span;
+                marker(&mut span);
+                builder.push(tt::Leaf::from(tt::Ident { sym: sym.clone(), span, is_raw: *is_raw }));
+            }
             Op::Punct(puncts) => {
                 builder.extend(puncts.iter().map(|punct| {
                     tt::Leaf::from({

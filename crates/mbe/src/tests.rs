@@ -13,7 +13,7 @@ use crate::DeclarativeMacro;
 
 #[test]
 fn meta_template_op_is_compact() {
-    assert_eq!(std::mem::size_of::<crate::parser::Op>(), 40);
+    assert_eq!(std::mem::size_of::<crate::parser::Op>(), 32);
 }
 
 #[test]
