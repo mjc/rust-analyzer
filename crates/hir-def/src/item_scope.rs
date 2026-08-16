@@ -1,7 +1,7 @@
 //! Describes items defined or visible (ie, imported) in a certain scope.
 //! This is shared between modules and blocks.
 
-use std::{fmt, num::NonZeroU32, sync::LazyLock};
+use std::{fmt, hash::Hash, num::NonZeroU32, sync::LazyLock};
 
 use base_db::{Crate, SourceDatabase};
 use either::Either;
@@ -405,6 +405,88 @@ impl<V> ScopeMap<V> {
     }
 }
 
+#[derive(Debug)]
+enum ScopeHashMap<K, V> {
+    Mutable(Box<FxHashMap<K, V>>),
+    Frozen(Box<[(K, V)]>),
+}
+
+impl<K, V> Default for ScopeHashMap<K, V> {
+    fn default() -> Self {
+        Self::Frozen(Box::new([]))
+    }
+}
+
+impl<K: Eq + Hash, V: PartialEq> PartialEq for ScopeHashMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().count() == other.iter().count()
+            && self.iter().all(|(key, value)| other.get(key) == Some(value))
+    }
+}
+
+impl<K: Eq + Hash, V: Eq> Eq for ScopeHashMap<K, V> {}
+
+impl<K: Eq + Hash, V> ScopeHashMap<K, V> {
+    fn get(&self, key: &K) -> Option<&V> {
+        match self {
+            Self::Mutable(map) => map.get(key),
+            Self::Frozen(entries) => {
+                entries.iter().find_map(|(stored, value)| (stored == key).then_some(value))
+            }
+        }
+    }
+
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        match self {
+            Self::Mutable(map) => map.get_mut(key),
+            Self::Frozen(entries) => {
+                entries.iter_mut().find_map(|(stored, value)| (stored == key).then_some(value))
+            }
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.mutable().insert(key, value)
+    }
+
+    fn entry(&mut self, key: K) -> std::collections::hash_map::Entry<'_, K, V> {
+        self.mutable().entry(key)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        match self {
+            Self::Mutable(map) => Either::Left(map.iter()),
+            Self::Frozen(entries) => Either::Right(entries.iter().map(|(key, value)| (key, value))),
+        }
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(key, _)| key)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, value)| value)
+    }
+
+    fn shrink_to_fit(&mut self) {
+        match std::mem::take(self) {
+            Self::Mutable(map) => {
+                *self = Self::Frozen((*map).into_iter().collect::<Vec<_>>().into_boxed_slice())
+            }
+            frozen @ Self::Frozen(_) => *self = frozen,
+        }
+    }
+
+    fn mutable(&mut self) -> &mut FxHashMap<K, V> {
+        if matches!(self, Self::Frozen(_)) {
+            let Self::Frozen(entries) = std::mem::take(self) else { unreachable!() };
+            *self = Self::Mutable(Box::new(entries.into_vec().into_iter().collect()));
+        }
+        let Self::Mutable(map) = self else { unreachable!() };
+        map
+    }
+}
+
 impl PerNsGlobImports {
     pub(crate) fn contains_type(&self, module_id: ModuleId, name: Name) -> bool {
         self.types.contains(&(module_id, name))
@@ -429,7 +511,7 @@ pub struct ItemScope {
     visibilities: ThinVec<Visibility>,
     /// Deduplicated import provenance referenced by type and value entries.
     imports: ThinVec<ScopeImportOrExternCrate>,
-    unresolved: FxHashSet<Name>,
+    unresolved: ScopeHashMap<Name, ()>,
 
     /// The defs declared in this scope. Each def has a single scope where it is
     /// declared.
@@ -443,9 +525,9 @@ pub struct ItemScope {
     unnamed_trait_imports: ThinVec<(TraitId, Item<()>)>,
 
     // the resolutions of the imports of this scope
-    use_imports_types: FxHashMap<ImportOrExternCrate, ImportOrDef>,
-    use_imports_values: FxHashMap<ImportOrGlob, ImportOrDef>,
-    use_imports_macros: FxHashMap<ImportOrExternCrate, ImportOrDef>,
+    use_imports_types: ScopeHashMap<ImportOrExternCrate, ImportOrDef>,
+    use_imports_values: ScopeHashMap<ImportOrGlob, ImportOrDef>,
+    use_imports_macros: ScopeHashMap<ImportOrExternCrate, ImportOrDef>,
 
     use_decls: ThinVec<UseId>,
     extern_crate_decls: ThinVec<ExternCrateId>,
@@ -461,14 +543,14 @@ pub struct ItemScope {
     /// Module scoped macros will be inserted into `items` instead of here.
     // FIXME: Macro shadowing in one module is not properly handled. Non-item place macros will
     // be all resolved to the last one defined if shadowing happens.
-    legacy_macros: FxHashMap<Name, SmallVec<[MacroId; 1]>>,
+    legacy_macros: ScopeHashMap<Name, SmallVec<[MacroId; 1]>>,
     /// The attribute macro invocations in this scope.
-    attr_macros: FxHashMap<AstId<ast::Item>, MacroCallId>,
+    attr_macros: ScopeHashMap<AstId<ast::Item>, MacroCallId>,
     /// The macro invocations in this scope.
-    macro_invocations: FxHashMap<AstId<ast::MacroCall>, MacroCallId>,
+    macro_invocations: ScopeHashMap<AstId<ast::MacroCall>, MacroCallId>,
     /// The derive macro invocations in this scope, keyed by the owner item over the actual derive attributes
     /// paired with the derive macro invocations for the specific attribute.
-    derive_macros: FxHashMap<AstId<ast::Adt>, SmallVec<[DeriveMacroInvocation; 1]>>,
+    derive_macros: ScopeHashMap<AstId<ast::Adt>, SmallVec<[DeriveMacroInvocation; 1]>>,
 }
 
 #[cfg(test)]
@@ -512,6 +594,39 @@ mod tests {
         reordered.entry(second.clone()).or_insert(2);
         reordered.shrink_to_fit();
         assert_eq!(map, reordered, "map equality must remain independent of insertion order");
+    }
+
+    #[test]
+    fn frozen_scope_hash_map_preserves_lookup_iteration_and_equality() {
+        let first = Name::new_symbol_root(intern::Symbol::intern("first"));
+        let second = Name::new_symbol_root(intern::Symbol::intern("second"));
+        let third = Name::new_symbol_root(intern::Symbol::intern("third"));
+        let mut map = ScopeHashMap::default();
+
+        map.insert(second.clone(), 2);
+        map.insert(first.clone(), 1);
+        map.insert(third.clone(), 3);
+        let iteration_order = map.iter().map(|(name, &value)| (name.clone(), value)).collect_vec();
+        map.shrink_to_fit();
+
+        assert_eq!(map.get(&first), Some(&1));
+        assert_eq!(map.get(&second), Some(&2));
+        assert_eq!(map.get(&third), Some(&3));
+        assert_eq!(
+            map.iter().map(|(name, &value)| (name.clone(), value)).collect_vec(),
+            iteration_order
+        );
+
+        let mut reordered = ScopeHashMap::default();
+        reordered.insert(third, 3);
+        reordered.insert(first, 1);
+        reordered.insert(second, 2);
+        reordered.shrink_to_fit();
+        assert_eq!(map, reordered, "map equality must remain independent of insertion order");
+
+        let fourth = Name::new_symbol_root(intern::Symbol::intern("fourth"));
+        assert_eq!(map.insert(fourth.clone(), 4), None);
+        assert_eq!(map.get(&fourth), Some(&4));
     }
 
     #[test]
@@ -665,7 +780,7 @@ impl ItemScope {
             .keys()
             .chain(self.values.keys())
             .chain(self.macros.keys())
-            .chain(self.unresolved.iter())
+            .chain(self.unresolved.keys())
             .sorted()
             .dedup()
             .map(move |name| (name, self.get(name)))
@@ -1210,7 +1325,7 @@ impl ItemScope {
             }
         }
 
-        if def.is_none() && self.unresolved.insert(lookup.1) {
+        if def.is_none() && self.unresolved.insert(lookup.1, ()).is_none() {
             changed = true;
         }
 
