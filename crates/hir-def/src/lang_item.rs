@@ -737,3 +737,32 @@ language_item_table! { LangItems =>
     Index_index,                   FunctionId;
     IndexMut_index_mut,            FunctionId;
 }
+
+#[cfg(test)]
+mod tests {
+    use test_fixture::WithFixture;
+
+    use super::crate_lang_items;
+    use crate::test_db::TestDB;
+
+    #[test]
+    fn collecting_lang_items_does_not_cache_attr_flags_for_every_item() {
+        let db = TestDB::with_files(
+            r#"
+#![feature(lang_items)]
+
+#[lang = "copy"]
+trait Copy {}
+
+fn ordinary() {}
+"#,
+        );
+        let krate = db.fetch_test_crate();
+
+        let executed = db.log_executed(|| {
+            assert!(crate_lang_items(&db, krate).unwrap().Copy.is_some());
+        });
+
+        assert!(!executed.iter().any(|query| query.contains("AttrFlags::query")));
+    }
+}
