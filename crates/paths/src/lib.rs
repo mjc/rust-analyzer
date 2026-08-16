@@ -433,5 +433,21 @@ fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
             }
         }
     }
+    ret.shrink_to_fit();
     ret
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_paths_do_not_retain_spare_capacity() {
+        let path = Utf8Path::new("123456789/123456789/123456789");
+
+        let normalized = normalize_path(path);
+
+        assert_eq!(normalized, path);
+        assert_eq!(normalized.capacity(), normalized.as_str().len());
+    }
 }
