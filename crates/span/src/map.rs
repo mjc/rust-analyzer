@@ -210,24 +210,41 @@ impl SpanMapRanges {
 
 #[derive(Clone)]
 enum SpanMapBaseIndices {
+    Uniform(u32),
     Compact(Vec<u8>),
     Wide(Vec<u32>),
 }
 
 impl SpanMapBaseIndices {
     fn new() -> Self {
-        Self::Compact(Vec::new())
+        Self::Uniform(0)
     }
 
-    fn get(&self, index: usize) -> usize {
+    fn get(&self, position: usize) -> usize {
         match self {
-            Self::Compact(indices) => usize::from(indices[index]),
-            Self::Wide(indices) => indices[index] as usize,
+            Self::Uniform(index) => *index as usize,
+            Self::Compact(indices) => usize::from(indices[position]),
+            Self::Wide(indices) => indices[position] as usize,
         }
     }
 
-    fn push(&mut self, index: u32) {
+    fn push(&mut self, index: u32, len: usize) {
         match self {
+            Self::Uniform(uniform) if len == 0 => {
+                *uniform = index;
+            }
+            Self::Uniform(uniform) if *uniform == index => {}
+            Self::Uniform(uniform) => {
+                if let (Ok(uniform), Ok(index)) = (u8::try_from(*uniform), u8::try_from(index)) {
+                    let mut indices = vec![uniform; len];
+                    indices.push(index);
+                    *self = Self::Compact(indices);
+                } else {
+                    let mut indices = vec![*uniform; len];
+                    indices.push(index);
+                    *self = Self::Wide(indices);
+                }
+            }
             Self::Compact(indices) if let Ok(index) = u8::try_from(index) => indices.push(index),
             Self::Compact(indices) => {
                 let mut wide = Vec::with_capacity(indices.capacity());
@@ -239,7 +256,19 @@ impl SpanMapBaseIndices {
         }
     }
 
-    fn replace_range(&mut self, range: std::ops::Range<usize>, replacement: Vec<u32>) {
+    fn replace_range(&mut self, range: std::ops::Range<usize>, replacement: Vec<u32>, len: usize) {
+        if let Self::Uniform(index) = self {
+            let index = *index;
+            if u8::try_from(index).is_ok()
+                && replacement.iter().all(|&index| u8::try_from(index).is_ok())
+            {
+                *self = Self::Compact(vec![index as u8; len]);
+            } else {
+                *self = Self::Wide(vec![index; len]);
+            }
+            self.replace_range(range, replacement, len);
+            return;
+        }
         let needs_wide = replacement.iter().any(|&index| u8::try_from(index).is_err());
         if needs_wide && let Self::Compact(indices) = self {
             let mut wide = Vec::with_capacity(indices.capacity());
@@ -247,6 +276,7 @@ impl SpanMapBaseIndices {
             *self = Self::Wide(wide);
         }
         match self {
+            Self::Uniform(_) => unreachable!(),
             Self::Compact(indices) => {
                 indices.splice(range, replacement.into_iter().map(|index| index as u8));
             }
@@ -257,7 +287,23 @@ impl SpanMapBaseIndices {
     }
 
     fn shrink_to_fit(&mut self) {
+        let uniform = match self {
+            Self::Uniform(_) => return,
+            Self::Compact(indices) => {
+                let index = indices.first().copied().unwrap_or_default();
+                indices.iter().all(|&it| it == index).then_some((u32::from(index), indices.len()))
+            }
+            Self::Wide(indices) => {
+                let index = indices.first().copied().unwrap_or_default();
+                indices.iter().all(|&it| it == index).then_some((index, indices.len()))
+            }
+        };
+        if let Some((index, _)) = uniform {
+            *self = Self::Uniform(index);
+            return;
+        }
         match self {
+            Self::Uniform(_) => unreachable!(),
             Self::Compact(indices) => indices.shrink_to_fit(),
             Self::Wide(indices) => indices.shrink_to_fit(),
         }
@@ -340,9 +386,9 @@ impl SpanMap {
             );
         }
         let base = self.base_index(span);
+        self.base_indices.push(base, self.ends.len());
         self.ends.push(offset);
         self.ranges.push(span.range);
-        self.base_indices.push(base);
     }
 
     /// Returns all [`TextRange`]s that correspond to the given span.
@@ -430,6 +476,7 @@ impl SpanMap {
 
         let replace_start = self.ends.partition_point(|end| end <= other_range.start());
         let replace_end = self.ends.partition_point(|end| end <= other_range.end());
+        let old_len = self.ends.len();
         self.ends.shift_from(replace_end, other_size, other_range.len());
 
         let mut ends = Vec::with_capacity(other.ends.len());
@@ -443,7 +490,7 @@ impl SpanMap {
         }
         self.ends.replace_range(replace_start..replace_end, ends);
         self.ranges.replace_range(replace_start..replace_end, ranges);
-        self.base_indices.replace_range(replace_start..replace_end, base_indices);
+        self.base_indices.replace_range(replace_start..replace_end, base_indices, old_len);
 
         // Matched arm info is no longer correct once we have multiple macros.
         self.matched_arm = None;
@@ -582,7 +629,7 @@ mod tests {
     use crate::{Edition, FileId, SpanAnchor};
 
     #[test]
-    fn repeated_span_bases_use_compact_storage() {
+    fn repeated_span_bases_use_uniform_index_storage() {
         assert_eq!(std::mem::size_of::<PackedTextRange>(), 4);
 
         let anchor = SpanAnchor {
@@ -603,7 +650,7 @@ mod tests {
 
         assert_eq!(map.bases.len(), 1);
         assert!(matches!(map.ends, SpanMapEnds::Compact(_)));
-        assert!(matches!(map.base_indices, SpanMapBaseIndices::Compact(_)));
+        assert!(matches!(map.base_indices, SpanMapBaseIndices::Uniform(0)));
         assert!(matches!(map.ranges, SpanMapRanges::Compact(_)));
         assert_eq!(
             map.iter().collect::<Vec<_>>(),
@@ -725,5 +772,31 @@ mod tests {
             map.iter().collect::<Vec<_>>(),
             [(2.into(), a), (3.into(), d), (5.into(), e), (7.into(), c)]
         );
+    }
+
+    #[test]
+    fn merging_a_different_base_promotes_uniform_indices() {
+        let ctx = SyntaxContext::root(Edition::CURRENT);
+        let span = |file_id| Span {
+            range: TextRange::new(0.into(), 1.into()),
+            anchor: SpanAnchor {
+                file_id: EditionedFileId::current_edition(FileId::from_raw(file_id)),
+                ast_id: ROOT_ERASED_FILE_AST_ID,
+            },
+            ctx,
+        };
+        let [a, b] = [0, 1].map(span);
+        let mut map = SpanMap::empty();
+        map.push(2.into(), a);
+        map.push(4.into(), a);
+        map.finish();
+        let mut replacement = SpanMap::empty();
+        replacement.push(1.into(), b);
+        replacement.finish();
+
+        map.merge(TextRange::new(2.into(), 4.into()), 1.into(), &replacement);
+
+        assert!(matches!(map.base_indices, SpanMapBaseIndices::Compact(_)));
+        assert_eq!(map.iter().collect::<Vec<_>>(), [(2.into(), a), (3.into(), b)]);
     }
 }
