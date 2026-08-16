@@ -172,7 +172,7 @@ fn invocation_fixtures(
             Op::Literal(it) => builder.push(tt::Leaf::from(it.clone())),
             Op::Ident(it) => builder.push(tt::Leaf::from(it.clone())),
             Op::Punct(puncts) => {
-                for punct in puncts.as_slice() {
+                for punct in puncts.iter() {
                     builder.push(tt::Leaf::from(*punct));
                 }
             }

@@ -101,7 +101,7 @@ pub(crate) enum Op {
     Repeat { tokens: MetaTemplate, kind: RepeatKind, separator: Option<Arc<Separator>> },
     Subtree { tokens: MetaTemplate, delimiter: Box<tt::Delimiter> },
     Literal(tt::Literal),
-    Punct(Box<ArrayVec<tt::Punct, MAX_GLUED_PUNCT_LEN>>),
+    Punct(Box<[tt::Punct]>),
     Ident(tt::Ident),
 }
 
@@ -203,11 +203,7 @@ fn next_op(
             // Note that the '$' itself is a valid token inside macro_rules.
             let second = match src.next() {
                 None => {
-                    return Ok(Op::Punct({
-                        let mut res = ArrayVec::new();
-                        res.push(p);
-                        Box::new(res)
-                    }));
+                    return Ok(Op::Punct(Box::from([p])));
                 }
                 Some(it) => it,
             };
@@ -261,11 +257,7 @@ fn next_op(
                                 "`$$` is not allowed on the pattern side",
                             ));
                         }
-                        Mode::Template => Op::Punct({
-                            let mut res = ArrayVec::new();
-                            res.push(punct);
-                            Box::new(res)
-                        }),
+                        Mode::Template => Op::Punct(Box::from([punct])),
                     },
                     tt::Leaf::Punct(_) | tt::Leaf::Literal(_) => {
                         return Err(ParseError::expected("expected ident"));
@@ -287,7 +279,7 @@ fn next_op(
         TtElement::Leaf(tt::Leaf::Punct(_)) => {
             // There's at least one punct so this shouldn't fail.
             let puncts = src.expect_glued_punct().unwrap();
-            Op::Punct(Box::new(puncts))
+            Op::Punct(puncts.into_iter().collect())
         }
 
         TtElement::Subtree(subtree, subtree_iter) => {

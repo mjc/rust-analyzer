@@ -17,6 +17,24 @@ fn meta_template_op_is_compact() {
 }
 
 #[test]
+fn punct_op_stores_only_used_elements() {
+    let span = Span {
+        range: TextRange::empty(TextSize::new(0)),
+        anchor: SpanAnchor {
+            file_id: EditionedFileId::new(FileId::from_raw(0), Edition::CURRENT),
+            ast_id: ROOT_ERASED_FILE_AST_ID,
+        },
+        ctx: SyntaxContext::root(Edition::CURRENT),
+    };
+    let op = crate::parser::Op::Punct(
+        vec![tt::Punct { char: '+', spacing: tt::Spacing::Alone, span }].into_boxed_slice(),
+    );
+    let crate::parser::Op::Punct(puncts) = op else { unreachable!() };
+
+    assert_eq!(std::mem::size_of_val(&*puncts), std::mem::size_of::<tt::Punct>());
+}
+
+#[test]
 fn concat_inside_nested_subtrees_preserves_tokens_and_spans() {
     check(
         Edition::CURRENT,
