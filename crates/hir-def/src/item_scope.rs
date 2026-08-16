@@ -500,9 +500,74 @@ const _: () = assert!(std::mem::size_of::<ScopeImportOrExternCrate>() == 12);
 const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 8);
 
 #[derive(Debug)]
+struct ScopeNameIndex(Box<[u8]>);
+
+impl ScopeNameIndex {
+    fn from_sorted(indices: Vec<u32>) -> Self {
+        if indices.is_empty() {
+            return Self(Box::new([]));
+        }
+        let width = if indices.len() <= u8::MAX as usize + 1 {
+            1
+        } else if indices.len() <= u16::MAX as usize + 1 {
+            2
+        } else {
+            4
+        };
+        let mut packed = Vec::with_capacity(1 + indices.len() * width);
+        packed.push(width as u8);
+        for index in indices {
+            match width {
+                1 => packed.push(u8::try_from(index).unwrap()),
+                2 => packed.extend_from_slice(&u16::try_from(index).unwrap().to_ne_bytes()),
+                4 => packed.extend_from_slice(&index.to_ne_bytes()),
+                _ => unreachable!(),
+            }
+        }
+        Self(packed.into_boxed_slice())
+    }
+
+    fn len(&self) -> usize {
+        self.0.first().map_or(0, |&width| (self.0.len() - 1) / usize::from(width))
+    }
+
+    fn get(&self, position: usize) -> usize {
+        let width = usize::from(self.0[0]);
+        let start = 1 + position * width;
+        match width {
+            1 => usize::from(self.0[start]),
+            2 => usize::from(u16::from_ne_bytes(self.0[start..start + 2].try_into().unwrap())),
+            4 => u32::from_ne_bytes(self.0[start..start + 4].try_into().unwrap()) as usize,
+            _ => unreachable!("scope name index has a valid width"),
+        }
+    }
+
+    fn binary_search_by(
+        &self,
+        mut compare: impl FnMut(usize) -> std::cmp::Ordering,
+    ) -> Option<usize> {
+        let (mut left, mut right) = (0, self.len());
+        while left < right {
+            let middle = left + (right - left) / 2;
+            match compare(self.get(middle)) {
+                std::cmp::Ordering::Less => left = middle + 1,
+                std::cmp::Ordering::Greater => right = middle,
+                std::cmp::Ordering::Equal => return Some(middle),
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    fn packed_bytes(&self) -> usize {
+        self.0.len()
+    }
+}
+
+#[derive(Debug)]
 enum ScopeMap<V> {
     Mutable(FxIndexMap<Name, V>),
-    Frozen { entries: Box<[(Name, V)]>, by_name: Box<[u32]> },
+    Frozen { entries: Box<[(Name, V)]>, by_name: ScopeNameIndex },
 }
 
 impl<V> Default for ScopeMap<V> {
@@ -519,9 +584,11 @@ impl<V: PartialEq> PartialEq for ScopeMap<V> {
                 Self::Frozen { entries: right_entries, by_name: right_by_name },
             ) => {
                 left_by_name.len() == right_by_name.len()
-                    && left_by_name.iter().zip(right_by_name).all(|(&left, &right)| {
-                        let (left_name, left_value) = &left_entries[left as usize];
-                        let (right_name, right_value) = &right_entries[right as usize];
+                    && (0..left_by_name.len()).all(|position| {
+                        let left = left_by_name.get(position);
+                        let right = right_by_name.get(position);
+                        let (left_name, left_value) = &left_entries[left];
+                        let (right_name, right_value) = &right_entries[right];
                         left_name == right_name && left_value == right_value
                     })
             }
@@ -540,9 +607,8 @@ impl<V> ScopeMap<V> {
         match self {
             Self::Mutable(map) => map.get(name),
             Self::Frozen { entries, by_name } => {
-                let index =
-                    by_name.binary_search_by(|&index| entries[index as usize].0.cmp(name)).ok()?;
-                Some(&entries[by_name[index] as usize].1)
+                let index = by_name.binary_search_by(|index| entries[index].0.cmp(name))?;
+                Some(&entries[by_name.get(index)].1)
             }
         }
     }
@@ -551,9 +617,8 @@ impl<V> ScopeMap<V> {
         match self {
             Self::Mutable(map) => map.get_mut(name),
             Self::Frozen { entries, by_name } => {
-                let index =
-                    by_name.binary_search_by(|&index| entries[index as usize].0.cmp(name)).ok()?;
-                Some(&mut entries[by_name[index] as usize].1)
+                let index = by_name.binary_search_by(|index| entries[index].0.cmp(name))?;
+                Some(&mut entries[by_name.get(index)].1)
             }
         }
     }
@@ -620,7 +685,15 @@ impl<V> ScopeMap<V> {
         by_name.sort_unstable_by(|&left, &right| {
             entries[left as usize].0.cmp(&entries[right as usize].0)
         });
-        *self = Self::Frozen { entries, by_name: by_name.into_boxed_slice() };
+        *self = Self::Frozen { entries, by_name: ScopeNameIndex::from_sorted(by_name) };
+    }
+
+    #[cfg(test)]
+    fn secondary_index_bytes(&self) -> usize {
+        match self {
+            Self::Mutable(_) => 0,
+            Self::Frozen { by_name, .. } => by_name.packed_bytes(),
+        }
     }
 }
 
@@ -878,6 +951,7 @@ mod tests {
         map.entry(third.clone()).or_insert(3);
         map.shrink_to_fit();
 
+        assert_eq!(map.secondary_index_bytes(), 4);
         assert_eq!(map.get(&first), Some(&1));
         assert_eq!(map.get(&second), Some(&2));
         assert_eq!(map.get(&third), Some(&3));
@@ -892,6 +966,18 @@ mod tests {
         reordered.entry(second.clone()).or_insert(2);
         reordered.shrink_to_fit();
         assert_eq!(map, reordered, "map equality must remain independent of insertion order");
+    }
+
+    #[test]
+    fn packed_scope_name_index_preserves_wide_indices() {
+        for (len, expected_bytes) in [(257, 515), (65_537, 262_149)] {
+            let index = ScopeNameIndex::from_sorted((0..len as u32).collect());
+
+            assert_eq!(index.packed_bytes(), expected_bytes);
+            assert_eq!(index.len(), len);
+            assert_eq!(index.get(len - 1), len - 1);
+            assert_eq!(index.binary_search_by(|stored| stored.cmp(&(len / 2))), Some(len / 2));
+        }
     }
 
     #[test]
