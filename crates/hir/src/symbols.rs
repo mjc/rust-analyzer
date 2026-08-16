@@ -414,7 +414,7 @@ impl<'a> SymbolCollector<'a> {
             return;
         }
         let body_id = body_id.into();
-        let body = Body::of(self.db, body_id);
+        let body = &Body::with_source_map(self.db, body_id).0;
 
         // Descend into the blocks and enqueue collection of all modules within.
         for (_, def_map) in body.blocks(self.db) {

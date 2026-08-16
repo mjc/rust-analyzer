@@ -802,6 +802,36 @@ make_item!();
     }
 
     #[test]
+    fn symbol_collection_does_not_retain_lowered_bodies() {
+        let (db, _) = RootDatabase::with_single_file(
+            r#"
+macro_rules! make_inner {
+    () => { struct Generated; };
+}
+
+fn outer() {
+    struct Inner;
+    make_inner!();
+}
+"#,
+        );
+        let module = Crate::from(db.test_crate()).root_module(&db);
+
+        let symbols = SymbolCollector::new_module(&db, module, false);
+
+        assert!(symbols.iter().any(|symbol| symbol.name.as_str() == "Inner"));
+        assert!(symbols.iter().any(|symbol| symbol.name.as_str() == "Generated"));
+        let memory = <dyn salsa::Database>::memory_usage(&db);
+        let retained_bodies = memory
+            .queries
+            .iter()
+            .filter(|(name, _)| **name == "Body::of_")
+            .map(|(_, info)| info.count())
+            .sum::<usize>();
+        assert_eq!(retained_bodies, 0);
+    }
+
+    #[test]
     fn module_symbols_are_recomputed_after_lru_eviction() {
         let mut fixture = String::from("//- /lib.rs crate:main\n");
         for module in 0..2 {
