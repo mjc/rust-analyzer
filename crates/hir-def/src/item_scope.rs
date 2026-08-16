@@ -502,7 +502,7 @@ const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 8);
 #[derive(Debug)]
 enum ScopeMap<V> {
     Mutable(FxIndexMap<Name, V>),
-    Frozen { entries: Box<[(Name, V)]>, by_name: Option<Box<[u32]>> },
+    Frozen { entries: Box<[(Name, V)]>, by_name: Box<[u32]> },
 }
 
 impl<V> Default for ScopeMap<V> {
@@ -515,8 +515,8 @@ impl<V: PartialEq> PartialEq for ScopeMap<V> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                Self::Frozen { entries: left_entries, by_name: Some(left_by_name) },
-                Self::Frozen { entries: right_entries, by_name: Some(right_by_name) },
+                Self::Frozen { entries: left_entries, by_name: left_by_name },
+                Self::Frozen { entries: right_entries, by_name: right_by_name },
             ) => {
                 left_by_name.len() == right_by_name.len()
                     && left_by_name.iter().zip(right_by_name).all(|(&left, &right)| {
@@ -536,17 +536,10 @@ impl<V: PartialEq> PartialEq for ScopeMap<V> {
 impl<V: Eq> Eq for ScopeMap<V> {}
 
 impl<V> ScopeMap<V> {
-    const LINEAR_LOOKUP_LIMIT: usize = 8;
-
     fn get(&self, name: &Name) -> Option<&V> {
         match self {
             Self::Mutable(map) => map.get(name),
             Self::Frozen { entries, by_name } => {
-                let Some(by_name) = by_name else {
-                    return entries
-                        .iter()
-                        .find_map(|(stored, value)| (stored == name).then_some(value));
-                };
                 let index =
                     by_name.binary_search_by(|&index| entries[index as usize].0.cmp(name)).ok()?;
                 Some(&entries[by_name[index] as usize].1)
@@ -558,11 +551,6 @@ impl<V> ScopeMap<V> {
         match self {
             Self::Mutable(map) => map.get_mut(name),
             Self::Frozen { entries, by_name } => {
-                let Some(by_name) = by_name else {
-                    return entries
-                        .iter_mut()
-                        .find_map(|(stored, value)| (stored == name).then_some(value));
-                };
                 let index =
                     by_name.binary_search_by(|&index| entries[index as usize].0.cmp(name)).ok()?;
                 Some(&mut entries[by_name[index] as usize].1)
@@ -627,28 +615,12 @@ impl<V> ScopeMap<V> {
             }
         };
         let entries = map.into_iter().collect::<Vec<_>>().into_boxed_slice();
-        let by_name = if entries.len() <= Self::LINEAR_LOOKUP_LIMIT {
-            None
-        } else {
-            let len =
-                u32::try_from(entries.len()).expect("ItemScope has more than u32::MAX entries");
-            let mut by_name = (0..len).collect::<Vec<_>>();
-            by_name.sort_unstable_by(|&left, &right| {
-                entries[left as usize].0.cmp(&entries[right as usize].0)
-            });
-            Some(by_name.into_boxed_slice())
-        };
-        *self = Self::Frozen { entries, by_name };
-    }
-
-    #[cfg(test)]
-    fn secondary_index_bytes(&self) -> usize {
-        match self {
-            Self::Mutable(_) => 0,
-            Self::Frozen { by_name, .. } => {
-                by_name.as_ref().map_or(0, |index| std::mem::size_of_val(&**index))
-            }
-        }
+        let len = u32::try_from(entries.len()).expect("ItemScope has more than u32::MAX entries");
+        let mut by_name = (0..len).collect::<Vec<_>>();
+        by_name.sort_unstable_by(|&left, &right| {
+            entries[left as usize].0.cmp(&entries[right as usize].0)
+        });
+        *self = Self::Frozen { entries, by_name: by_name.into_boxed_slice() };
     }
 }
 
@@ -920,41 +892,6 @@ mod tests {
         reordered.entry(second.clone()).or_insert(2);
         reordered.shrink_to_fit();
         assert_eq!(map, reordered, "map equality must remain independent of insertion order");
-    }
-
-    #[test]
-    fn small_frozen_scope_map_avoids_a_secondary_index() {
-        let mut map = ScopeMap::default();
-        for name in ["first", "second", "third"] {
-            map.entry(Name::new_symbol_root(intern::Symbol::intern(name))).or_insert(name);
-        }
-
-        map.shrink_to_fit();
-
-        assert_eq!(map.secondary_index_bytes(), 0);
-    }
-
-    #[test]
-    fn large_frozen_scope_map_retains_its_secondary_index() {
-        let mut map = ScopeMap::default();
-        for index in 0..=ScopeMap::<usize>::LINEAR_LOOKUP_LIMIT {
-            let name = Name::new_root(&format!("name{index}"));
-            map.entry(name).or_insert(index);
-        }
-
-        map.shrink_to_fit();
-
-        assert_eq!(
-            map.secondary_index_bytes(),
-            (ScopeMap::<usize>::LINEAR_LOOKUP_LIMIT + 1) * std::mem::size_of::<u32>()
-        );
-        for index in 0..=ScopeMap::<usize>::LINEAR_LOOKUP_LIMIT {
-            assert_eq!(map.get(&Name::new_root(&format!("name{index}"))), Some(&index));
-        }
-        assert_eq!(
-            map.values().copied().collect_vec(),
-            (0..=ScopeMap::<usize>::LINEAR_LOOKUP_LIMIT).collect_vec()
-        );
     }
 
     #[test]
