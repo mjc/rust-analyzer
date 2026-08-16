@@ -17,21 +17,52 @@ fn meta_template_op_is_compact() {
 }
 
 #[test]
-fn punct_op_stores_only_used_elements() {
-    let span = Span {
-        range: TextRange::empty(TextSize::new(0)),
+fn punct_op_inlines_and_roundtrips_exact_run() {
+    let mut span = Span {
+        range: TextRange::at(TextSize::new(10), TextSize::new(1)),
         anchor: SpanAnchor {
             file_id: EditionedFileId::new(FileId::from_raw(0), Edition::CURRENT),
             ast_id: ROOT_ERASED_FILE_AST_ID,
         },
         ctx: SyntaxContext::root(Edition::CURRENT),
     };
-    let op = crate::parser::Op::Punct(
-        vec![tt::Punct { char: '+', spacing: tt::Spacing::Alone, span }].into_boxed_slice(),
-    );
-    let crate::parser::Op::Punct(puncts) = op else { unreachable!() };
+    let mut puncts = Vec::new();
+    for (index, (char, spacing)) in
+        [('>', tt::Spacing::Joint), ('>', tt::Spacing::Joint), ('=', tt::Spacing::Alone)]
+            .into_iter()
+            .enumerate()
+    {
+        span.range = TextRange::at(TextSize::new(10 + index as u32), TextSize::new(1));
+        puncts.push(tt::Punct { char, spacing, span });
+    }
+    let op = crate::parser::Op::from_puncts(&puncts);
 
-    assert_eq!(std::mem::size_of_val(&*puncts), std::mem::size_of::<tt::Punct>());
+    assert!(matches!(op, crate::parser::Op::PunctInline { .. }));
+    assert_eq!(op.puncts().collect::<Vec<_>>(), puncts);
+}
+
+#[test]
+fn punct_op_preserves_noncontiguous_spans() {
+    let span = Span {
+        range: TextRange::at(TextSize::new(10), TextSize::new(1)),
+        anchor: SpanAnchor {
+            file_id: EditionedFileId::new(FileId::from_raw(0), Edition::CURRENT),
+            ast_id: ROOT_ERASED_FILE_AST_ID,
+        },
+        ctx: SyntaxContext::root(Edition::CURRENT),
+    };
+    let puncts = [
+        tt::Punct { char: '>', spacing: tt::Spacing::Joint, span },
+        tt::Punct {
+            char: '=',
+            spacing: tt::Spacing::Alone,
+            span: Span { range: TextRange::at(TextSize::new(20), TextSize::new(1)), ..span },
+        },
+    ];
+    let op = crate::parser::Op::from_puncts(&puncts);
+
+    assert!(matches!(op, crate::parser::Op::PunctBoxed(_)));
+    assert_eq!(op.puncts().collect::<Vec<_>>(), puncts);
 }
 
 #[test]

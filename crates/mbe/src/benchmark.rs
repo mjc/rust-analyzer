@@ -182,9 +182,9 @@ fn invocation_fixtures(
                 span: *span,
                 is_raw: *is_raw,
             })),
-            Op::Punct(puncts) => {
-                for punct in puncts.iter() {
-                    builder.push(tt::Leaf::from(*punct));
+            op @ (Op::PunctInline { .. } | Op::PunctBoxed(_)) => {
+                for punct in op.puncts() {
+                    builder.push(tt::Leaf::from(punct));
                 }
             }
             Op::Repeat { tokens, kind, separator } => {

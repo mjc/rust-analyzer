@@ -188,10 +188,10 @@ fn expand_subtree(
                 marker(&mut span);
                 builder.push(tt::Leaf::from(tt::Ident { sym: sym.clone(), span, is_raw: *is_raw }));
             }
-            Op::Punct(puncts) => {
-                builder.extend(puncts.iter().map(|punct| {
+            op @ (Op::PunctInline { .. } | Op::PunctBoxed(_)) => {
+                builder.extend(op.puncts().map(|punct| {
                     tt::Leaf::from({
-                        let mut it = *punct;
+                        let mut it = punct;
                         marker(&mut it.span);
                         it
                     })

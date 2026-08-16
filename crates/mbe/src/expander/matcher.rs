@@ -575,11 +575,11 @@ fn match_loop_inner<'t>(
                 }
                 try_push!(next_items, item);
             }
-            OpDelimited::Op(Op::Punct(lhs)) => {
+            OpDelimited::Op(op @ (Op::PunctInline { .. } | Op::PunctBoxed(_))) => {
                 let mut fork = src.clone();
                 let error = if let Ok(rhs) = fork.expect_glued_punct() {
                     let first_is_single_quote = rhs[0].char == '\'';
-                    let lhs = lhs.iter().map(|it| it.char);
+                    let lhs = op.puncts().map(|it| it.char);
                     let rhs_ = rhs.iter().map(|it| it.char);
                     if lhs.clone().eq(rhs_) {
                         // HACK: here we use `meta_result` to pass `TtIter` back to caller because
@@ -889,7 +889,7 @@ fn collect_vars(collector_fun: &mut impl FnMut(Symbol), pattern: &MetaTemplate) 
             Op::Var { name, .. } => collector_fun(name.clone()),
             Op::Subtree { tokens, .. } => collect_vars(collector_fun, tokens),
             Op::Repeat { tokens, .. } => collect_vars(collector_fun, tokens),
-            Op::Literal { .. } | Op::Ident { .. } | Op::Punct(_) => {}
+            Op::Literal { .. } | Op::Ident { .. } | Op::PunctInline { .. } | Op::PunctBoxed(_) => {}
             Op::Ignore { .. }
             | Op::Index { .. }
             | Op::Count { .. }

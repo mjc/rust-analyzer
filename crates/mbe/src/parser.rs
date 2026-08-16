@@ -101,11 +101,59 @@ pub(crate) enum Op {
     Repeat { tokens: MetaTemplate, kind: RepeatKind, separator: Option<Arc<Separator>> },
     Subtree { tokens: MetaTemplate, delimiter: Box<tt::Delimiter> },
     Literal { text_and_suffix: Symbol, span: Span, kind: tt::LitKind, suffix_len: u8 },
-    Punct(Box<[tt::Punct]>),
+    PunctInline { span: Span, encoded: u32 },
+    PunctBoxed(Box<[tt::Punct]>),
     Ident { sym: Symbol, span: Span, is_raw: tt::IdentIsRaw },
 }
 
 impl Op {
+    pub(crate) fn from_puncts(puncts: &[tt::Punct]) -> Self {
+        assert!(!puncts.is_empty() && puncts.len() <= MAX_GLUED_PUNCT_LEN);
+        let first = puncts[0];
+        let can_inline = puncts.len() == 1
+            || puncts.iter().enumerate().all(|(index, punct)| {
+                punct.char.is_ascii()
+                    && punct.span.anchor == first.span.anchor
+                    && punct.span.ctx == first.span.ctx
+                    && punct.span.range
+                        == tt::TextRange::at(
+                            first.span.range.start() + tt::TextSize::new(index as u32),
+                            tt::TextSize::new(1),
+                        )
+            });
+        if !can_inline {
+            return Self::PunctBoxed(puncts.into());
+        }
+
+        // Bits 0..=1 store len - 1, bits 2..=7 store the three spacing values, and the
+        // remaining bits store either one Unicode scalar or up to three ASCII characters.
+        let mut encoded = (puncts.len() - 1) as u32;
+        for (index, punct) in puncts.iter().enumerate() {
+            let spacing = match punct.spacing {
+                tt::Spacing::Alone => 0,
+                tt::Spacing::Joint => 1,
+                tt::Spacing::JointHidden => 2,
+            };
+            encoded |= spacing << (2 + index * 2);
+            if puncts.len() == 1 {
+                encoded |= (punct.char as u32) << 8;
+            } else {
+                encoded |= (punct.char as u32) << (8 + index * 8);
+            }
+        }
+        Self::PunctInline { span: first.span, encoded }
+    }
+
+    pub(crate) fn puncts(&self) -> Puncts<'_> {
+        match self {
+            Self::PunctInline { span, encoded } => {
+                Puncts::Inline { span: *span, encoded: *encoded, index: 0 }
+            }
+            Self::PunctBoxed(puncts) => Puncts::Boxed(puncts.iter()),
+            _ => unreachable!("puncts called on a non-punctuation operation"),
+        }
+    }
+
     fn from_literal(literal: tt::Literal) -> Self {
         let tt::Literal { text_and_suffix, span, kind, suffix_len } = literal;
         Self::Literal { text_and_suffix, span, kind, suffix_len }
@@ -116,6 +164,62 @@ impl Op {
         Self::Ident { sym, span, is_raw }
     }
 }
+
+#[derive(Clone)]
+pub(crate) enum Puncts<'a> {
+    Inline { span: Span, encoded: u32, index: u8 },
+    Boxed(std::slice::Iter<'a, tt::Punct>),
+}
+
+impl Iterator for Puncts<'_> {
+    type Item = tt::Punct;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Inline { span, encoded, index } => {
+                let len = (*encoded & 0b11) as u8 + 1;
+                if *index == len {
+                    return None;
+                }
+
+                let char = if len == 1 {
+                    char::from_u32(*encoded >> 8)
+                } else {
+                    char::from_u32((*encoded >> (8 + u32::from(*index) * 8)) & 0xff)
+                }
+                .expect("packed punctuation contains a valid character");
+                let spacing = match (*encoded >> (2 + u32::from(*index) * 2)) & 0b11 {
+                    0 => tt::Spacing::Alone,
+                    1 => tt::Spacing::Joint,
+                    2 => tt::Spacing::JointHidden,
+                    _ => unreachable!("packed punctuation contains a valid spacing"),
+                };
+                let mut punct_span = *span;
+                if *index != 0 {
+                    punct_span.range = tt::TextRange::at(
+                        span.range.start() + tt::TextSize::new(u32::from(*index)),
+                        tt::TextSize::new(1),
+                    );
+                }
+                *index += 1;
+                Some(tt::Punct { char, spacing, span: punct_span })
+            }
+            Self::Boxed(puncts) => puncts.next().copied(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = match self {
+            Self::Inline { encoded, index, .. } => {
+                ((*encoded & 0b11) as usize + 1).saturating_sub(usize::from(*index))
+            }
+            Self::Boxed(puncts) => puncts.len(),
+        };
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for Puncts<'_> {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConcatOp {
@@ -215,7 +319,7 @@ fn next_op(
             // Note that the '$' itself is a valid token inside macro_rules.
             let second = match src.next() {
                 None => {
-                    return Ok(Op::Punct(Box::from([p])));
+                    return Ok(Op::from_puncts(&[p]));
                 }
                 Some(it) => it,
             };
@@ -269,7 +373,7 @@ fn next_op(
                                 "`$$` is not allowed on the pattern side",
                             ));
                         }
-                        Mode::Template => Op::Punct(Box::from([punct])),
+                        Mode::Template => Op::from_puncts(&[punct]),
                     },
                     tt::Leaf::Punct(_) | tt::Leaf::Literal(_) => {
                         return Err(ParseError::expected("expected ident"));
@@ -291,7 +395,7 @@ fn next_op(
         TtElement::Leaf(tt::Leaf::Punct(_)) => {
             // There's at least one punct so this shouldn't fail.
             let puncts = src.expect_glued_punct().unwrap();
-            Op::Punct(puncts.into_iter().collect())
+            Op::from_puncts(&puncts)
         }
 
         TtElement::Subtree(subtree, subtree_iter) => {
