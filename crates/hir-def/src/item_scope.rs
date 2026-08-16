@@ -132,6 +132,8 @@ impl ScopeDefId {
     const MACRO2: u32 = 10;
     const MACRO_RULES: u32 = 11;
     const PROC_MACRO: u32 = 12;
+    const MODULE: u32 = 13;
+    const COMPACT_PAYLOAD_MASK: u32 = (1 << 28) - 1;
 
     fn new(def: ModuleDefId) -> Self {
         match def {
@@ -194,6 +196,25 @@ impl ScopeDefId {
 
     const fn payload(self) -> u32 {
         (self.0 >> 32) as u32
+    }
+
+    fn compact(self) -> Option<u32> {
+        if self.0 as u32 <= salsa::Id::MAX_U32 {
+            let raw = u32::try_from(self.0).ok()?;
+            return (raw <= Self::COMPACT_PAYLOAD_MASK).then_some(Self::MODULE << 28 | raw);
+        }
+        let payload = self.payload();
+        (payload <= Self::COMPACT_PAYLOAD_MASK).then_some(self.kind() << 28 | payload)
+    }
+
+    fn from_compact(compact: u32) -> Self {
+        let kind = compact >> 28;
+        let payload = compact & Self::COMPACT_PAYLOAD_MASK;
+        if kind == Self::MODULE {
+            Self(u64::from(payload))
+        } else {
+            Self(Self::pack(kind, payload))
+        }
     }
 
     const fn builtin_index(builtin: BuiltinType) -> u32 {
@@ -370,10 +391,19 @@ impl ScopeImportId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ScopeTypesItem {
+struct ScopeTypesItem(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScopeTypesItemFull {
     def: ScopeDefId,
     vis: ScopeVisibility,
     import: ScopeImportId,
+}
+
+impl ScopeTypesItemFull {
+    fn sort_key(self) -> (u64, u32, Option<NonZeroU32>) {
+        (self.def.0, self.vis.0, self.import.0)
+    }
 }
 
 impl ScopeValuesItem {
@@ -398,21 +428,64 @@ impl ScopeValuesItem {
 }
 
 impl ScopeTypesItem {
+    const OVERFLOW: u64 = 1 << 63;
+    const VISIBILITY_SHIFT: u32 = 32;
+    const IMPORT_SHIFT: u32 = 44;
+    const VISIBILITY_MASK: u32 = (1 << 12) - 1;
+    const IMPORT_MASK: u32 = (1 << 19) - 1;
+
     fn new(
         item: TypesItem,
         vis: ScopeVisibility,
         imports: &mut ThinVec<ScopeImportOrExternCrate>,
+        overflow: &mut ThinVec<ScopeTypesItemFull>,
     ) -> Self {
         let import = ScopeImportId::new(item.import, imports);
-        Self { def: ScopeDefId::new(item.def), vis, import }
+        Self::pack(ScopeTypesItemFull { def: ScopeDefId::new(item.def), vis, import }, overflow)
     }
 
-    fn get(self, visibilities: &[Visibility], imports: &[ScopeImportOrExternCrate]) -> TypesItem {
-        TypesItem {
-            def: self.def.get(),
-            vis: self.vis.get(visibilities),
-            import: self.import.get(imports),
+    fn pack(item: ScopeTypesItemFull, overflow: &mut ThinVec<ScopeTypesItemFull>) -> Self {
+        let vis = if item.vis == ScopeVisibility::PUBLIC {
+            Some(0)
+        } else {
+            item.vis.0.checked_add(1).filter(|&vis| vis <= Self::VISIBILITY_MASK)
+        };
+        let import = item.import.0.map_or(0, NonZeroU32::get);
+        if let (Some(def), Some(vis), true) = (item.def.compact(), vis, import <= Self::IMPORT_MASK)
+        {
+            return Self(
+                u64::from(def)
+                    | u64::from(vis) << Self::VISIBILITY_SHIFT
+                    | u64::from(import) << Self::IMPORT_SHIFT,
+            );
         }
+
+        let index =
+            u64::try_from(overflow.len()).expect("ItemScope has more than u64::MAX entries");
+        overflow.push(item);
+        Self(Self::OVERFLOW | index)
+    }
+
+    fn full(self, overflow: &[ScopeTypesItemFull]) -> ScopeTypesItemFull {
+        if self.0 & Self::OVERFLOW != 0 {
+            return overflow[(self.0 & !Self::OVERFLOW) as usize];
+        }
+        let def = ScopeDefId::from_compact(self.0 as u32);
+        let vis = ((self.0 >> Self::VISIBILITY_SHIFT) as u32) & Self::VISIBILITY_MASK;
+        let vis = if vis == 0 { ScopeVisibility::PUBLIC } else { ScopeVisibility(vis - 1) };
+        let import = ((self.0 >> Self::IMPORT_SHIFT) as u32) & Self::IMPORT_MASK;
+        let import = ScopeImportId(NonZeroU32::new(import));
+        ScopeTypesItemFull { def, vis, import }
+    }
+
+    fn get(
+        self,
+        visibilities: &[Visibility],
+        imports: &[ScopeImportOrExternCrate],
+        overflow: &[ScopeTypesItemFull],
+    ) -> TypesItem {
+        let ScopeTypesItemFull { def, vis, import } = self.full(overflow);
+        TypesItem { def: def.get(), vis: vis.get(visibilities), import: import.get(imports) }
     }
 }
 
@@ -421,7 +494,7 @@ const _: () = assert!(std::mem::size_of::<ScopeImportId>() == 4);
 const _: () = assert!(ScopeDefId::PROC_MACRO <= u32::MAX - salsa::Id::MAX_U32);
 const _: () = assert!(std::mem::size_of::<ScopeValuesItem>() == 16);
 const _: () = assert!(std::mem::size_of::<ScopeImportOrExternCrate>() == 12);
-const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 16);
+const _: () = assert!(std::mem::size_of::<ScopeTypesItem>() == 8);
 
 #[derive(Debug)]
 enum ScopeMap<V> {
@@ -648,6 +721,7 @@ pub struct ItemScope {
     /// imports. The imports belong to this module and can be resolved by using them on
     /// the `use_imports_*` fields.
     types: ScopeMap<ScopeTypesItem>,
+    type_overflow: ThinVec<ScopeTypesItemFull>,
     values: ScopeMap<ScopeValuesItem>,
     macros: FxIndexMap<Name, MacrosItem>,
     /// Deduplicated visibilities referenced by type and value entries.
@@ -708,7 +782,7 @@ mod tests {
 
     #[test]
     fn type_scope_entry_is_compact() {
-        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 16);
+        assert_eq!(std::mem::size_of::<ScopeTypesItem>(), 8);
     }
 
     #[test]
@@ -739,6 +813,54 @@ mod tests {
         for definition in definitions {
             assert_eq!(ScopeDefId::new(definition).get(), definition);
         }
+    }
+
+    #[test]
+    fn compact_type_scope_entry_preserves_full_width_ids_in_overflow() {
+        let item = ScopeTypesItemFull {
+            def: ScopeDefId::new(ModuleDefId::ModuleId(ModuleId::from_id(
+                salsa::Id::from_bits(42).with_generation(7),
+            ))),
+            vis: ScopeVisibility::PUBLIC,
+            import: ScopeImportId::NONE,
+        };
+        let mut overflow = ThinVec::new();
+
+        let packed = ScopeTypesItem::pack(item, &mut overflow);
+
+        assert_eq!(overflow.as_slice(), [item]);
+        assert_eq!(packed.full(&overflow), item);
+    }
+
+    #[test]
+    fn overflow_type_scope_equality_is_insertion_order_independent() {
+        let names = [
+            Name::new_symbol_root(intern::Symbol::intern("first")),
+            Name::new_symbol_root(intern::Symbol::intern("second")),
+        ];
+        let definitions = [
+            ModuleDefId::ModuleId(ModuleId::from_id(salsa::Id::from_bits(42).with_generation(7))),
+            ModuleDefId::ModuleId(ModuleId::from_id(salsa::Id::from_bits(42).with_generation(8))),
+        ];
+        let mut first = ItemScope::default();
+        let mut second = ItemScope::default();
+
+        for (scope, order) in [(&mut first, [0, 1]), (&mut second, [1, 0])] {
+            for index in order {
+                let item = ScopeTypesItemFull {
+                    def: ScopeDefId::new(definitions[index]),
+                    vis: ScopeVisibility::PUBLIC,
+                    import: ScopeImportId::NONE,
+                };
+                scope.types.insert(
+                    names[index].clone(),
+                    ScopeTypesItem::pack(item, &mut scope.type_overflow),
+                );
+            }
+            scope.shrink_to_fit();
+        }
+
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -854,6 +976,7 @@ mod tests {
                     TypesItem { def, vis: type_vis, import: Some(type_import) },
                     type_id,
                     &mut scope.imports,
+                    &mut scope.type_overflow,
                 ),
             );
             scope.values.insert(
@@ -907,11 +1030,14 @@ mod tests {
         };
         let value_item =
             ValuesItem { def, vis: Visibility::Public, import: Some(ImportOrGlob::Import(shared)) };
-        let compact_type = ScopeTypesItem::new(type_item, ScopeVisibility::PUBLIC, &mut stored);
+        let mut overflow = ThinVec::new();
+        let compact_type =
+            ScopeTypesItem::new(type_item, ScopeVisibility::PUBLIC, &mut stored, &mut overflow);
         let compact_value = ScopeValuesItem::new(value_item, ScopeVisibility::PUBLIC, &mut stored);
 
         assert_eq!(stored.len(), imports.len() + 1);
-        assert_eq!(compact_type.get(&[], &stored), type_item);
+        assert!(overflow.is_empty());
+        assert_eq!(compact_type.get(&[], &stored, &overflow), type_item);
         assert_eq!(compact_value.get(&[], &stored), value_item);
     }
 }
@@ -966,7 +1092,9 @@ impl ItemScope {
     pub fn types(
         &self,
     ) -> impl Iterator<Item = (&Name, Item<ModuleDefId, ImportOrExternCrate>)> + '_ {
-        self.types.iter().map(|(name, &item)| (name, item.get(&self.visibilities, &self.imports)))
+        self.types.iter().map(|(name, &item)| {
+            (name, item.get(&self.visibilities, &self.imports, &self.type_overflow))
+        })
     }
 
     pub fn macros(&self) -> impl Iterator<Item = (&Name, Item<MacroId, ImportOrExternCrate>)> + '_ {
@@ -1079,8 +1207,12 @@ impl ItemScope {
     }
 
     pub(crate) fn modules_in_scope(&self) -> impl Iterator<Item = (ModuleId, Visibility)> + '_ {
-        self.types.values().filter_map(|ns| match ns.def.get() {
-            ModuleDefId::ModuleId(module) => Some((module, ns.vis.get(&self.visibilities))),
+        self.types.values().filter_map(|ns| match ns.full(&self.type_overflow) {
+            ScopeTypesItemFull { def, vis, .. }
+                if let ModuleDefId::ModuleId(module) = def.get() =>
+            {
+                Some((module, vis.get(&self.visibilities)))
+            }
             _ => None,
         })
     }
@@ -1101,7 +1233,7 @@ impl ItemScope {
                 .types
                 .get(name)
                 .copied()
-                .map(|item| item.get(&self.visibilities, &self.imports)),
+                .map(|item| item.get(&self.visibilities, &self.imports, &self.type_overflow)),
             values: self
                 .values
                 .get(name)
@@ -1112,7 +1244,10 @@ impl ItemScope {
     }
 
     pub(crate) fn type_(&self, name: &Name) -> Option<(ModuleDefId, Visibility)> {
-        self.types.get(name).map(|item| (item.def.get(), item.vis.get(&self.visibilities)))
+        self.types.get(name).map(|&item| {
+            let item = item.full(&self.type_overflow);
+            (item.def.get(), item.vis.get(&self.visibilities))
+        })
     }
 
     pub(crate) fn makro(&self, name: &Name) -> Option<MacroId> {
@@ -1128,6 +1263,7 @@ impl ItemScope {
             ItemInNs::Types(def) => {
                 let def = ScopeDefId::new(def);
                 self.types.iter().find_map(|(name, other_def)| {
+                    let other_def = other_def.full(&self.type_overflow);
                     (other_def.def == def).then_some((
                         name,
                         other_def.vis.get(&self.visibilities),
@@ -1171,6 +1307,7 @@ impl ItemScope {
                 self.types
                     .iter()
                     .filter_map(|(name, other_def)| {
+                        let other_def = other_def.full(&self.type_overflow);
                         (other_def.def == def).then_some((
                             name,
                             other_def.vis.get(&self.visibilities),
@@ -1198,7 +1335,7 @@ impl ItemScope {
     pub(crate) fn traits(&self) -> impl Iterator<Item = TraitId> + '_ {
         self.types
             .values()
-            .filter_map(|def| match def.def.get() {
+            .filter_map(|def| match def.full(&self.type_overflow).def.get() {
                 ModuleDefId::TraitId(t) => Some(t),
                 _ => None,
             })
@@ -1372,6 +1509,7 @@ impl ItemScope {
             let vis = self.intern_visibility(fld.vis);
             let visibilities = &self.visibilities;
             let imports = &mut self.imports;
+            let overflow = &mut self.type_overflow;
             let existing = self.types.entry(lookup.1.clone());
             match existing {
                 Entry::Vacant(entry) => {
@@ -1386,7 +1524,7 @@ impl ItemScope {
                         self.use_imports_types
                             .insert(import, prev.map_or(ImportOrDef::Def(fld.def), Into::into));
                     }
-                    entry.insert(ScopeTypesItem::new(fld, vis, imports));
+                    entry.insert(ScopeTypesItem::new(fld, vis, imports, overflow));
                     changed = true;
                 }
                 Entry::Occupied(mut entry) => {
@@ -1404,7 +1542,7 @@ impl ItemScope {
                             if glob_imports.types.remove(&lookup)
                                 || entry
                                     .get()
-                                    .get(visibilities, imports)
+                                    .get(visibilities, imports, overflow)
                                     .is_reresolved_by(&fld.def, import)
                             {
                                 let prev = std::mem::replace(&mut fld.import, import);
@@ -1415,7 +1553,7 @@ impl ItemScope {
                                     );
                                 }
                                 cov_mark::hit!(import_shadowed);
-                                entry.insert(ScopeTypesItem::new(fld, vis, imports));
+                                entry.insert(ScopeTypesItem::new(fld, vis, imports, overflow));
                                 changed = true;
                             }
                         }
@@ -1519,7 +1657,11 @@ impl ItemScope {
     pub(crate) fn censor_non_proc_macros(&mut self, krate: Crate) {
         let visibility = Visibility::PubCrate(krate);
         let vis = self.intern_visibility(visibility);
-        self.types.values_mut().for_each(|def| def.vis = vis);
+        for item in self.types.values_mut() {
+            let mut full = item.full(&self.type_overflow);
+            full.vis = vis;
+            *item = ScopeTypesItem::pack(full, &mut self.type_overflow);
+        }
         self.values.values_mut().for_each(|def| def.vis = vis);
         self.unnamed_trait_imports.iter_mut().for_each(|(_, def)| def.vis = visibility);
 
@@ -1604,26 +1746,44 @@ impl ItemScope {
 
     pub(crate) fn shrink_to_fit(&mut self) {
         let old_visibilities = std::mem::take(&mut self.visibilities);
-        for item in self.types.values_mut() {
-            item.vis =
-                ScopeVisibility::new(item.vis.get(&old_visibilities), &mut self.visibilities);
-        }
-        for item in self.values.values_mut() {
-            item.vis =
-                ScopeVisibility::new(item.vis.get(&old_visibilities), &mut self.visibilities);
-        }
-
         let old_imports = std::mem::take(&mut self.imports);
+        let old_type_overflow = std::mem::take(&mut self.type_overflow);
         for item in self.types.values_mut() {
-            item.import = ScopeImportId::new(item.import.get(&old_imports), &mut self.imports);
+            let mut full = item.full(&old_type_overflow);
+            full.vis =
+                ScopeVisibility::new(full.vis.get(&old_visibilities), &mut self.visibilities);
+            full.import = ScopeImportId::new(full.import.get(&old_imports), &mut self.imports);
+            *item = ScopeTypesItem::pack(full, &mut self.type_overflow);
+        }
+        if self.type_overflow.len() > 1 {
+            let old_type_overflow = std::mem::take(&mut self.type_overflow);
+            let mut sorted_type_overflow = old_type_overflow.iter().copied().collect::<Vec<_>>();
+            sorted_type_overflow.sort_unstable_by_key(|item| item.sort_key());
+            sorted_type_overflow.dedup();
+            for item in
+                self.types.values_mut().filter(|item| item.0 & ScopeTypesItem::OVERFLOW != 0)
+            {
+                let full = item.full(&old_type_overflow);
+                let index = sorted_type_overflow
+                    .binary_search_by_key(&full.sort_key(), |item| item.sort_key())
+                    .expect("overflow item disappeared while sorting");
+                *item = ScopeTypesItem(
+                    ScopeTypesItem::OVERFLOW
+                        | u64::try_from(index).expect("ItemScope has more than u64::MAX entries"),
+                );
+            }
+            self.type_overflow = sorted_type_overflow.into_iter().collect();
         }
         for item in self.values.values_mut() {
+            item.vis =
+                ScopeVisibility::new(item.vis.get(&old_visibilities), &mut self.visibilities);
             item.import = ScopeImportId::new(item.import.get(&old_imports), &mut self.imports);
         }
 
         // Exhaustive match to require handling new fields.
         let Self {
             types,
+            type_overflow,
             values,
             macros,
             visibilities,
@@ -1647,6 +1807,7 @@ impl ItemScope {
         } = self;
         extern_blocks.shrink_to_fit();
         types.shrink_to_fit();
+        type_overflow.shrink_to_fit();
         values.shrink_to_fit();
         macros.shrink_to_fit();
         visibilities.shrink_to_fit();
@@ -1675,7 +1836,9 @@ impl ItemScope {
         let vis = self.intern_visibility(vis);
         let res =
             self.types.get_mut(name).expect("tried to update visibility of non-existent type");
-        res.vis = vis;
+        let mut full = res.full(&self.type_overflow);
+        full.vis = vis;
+        *res = ScopeTypesItem::pack(full, &mut self.type_overflow);
     }
 
     pub(crate) fn update_visibility_values(&mut self, name: &Name, vis: Visibility) {
@@ -1694,8 +1857,10 @@ impl ItemScope {
     pub(crate) fn update_def_types(&mut self, name: &Name, def: ModuleDefId, vis: Visibility) {
         let vis = self.intern_visibility(vis);
         let res = self.types.get_mut(name).expect("tried to update def of non-existent type");
-        res.def = ScopeDefId::new(def);
-        res.vis = vis;
+        let mut full = res.full(&self.type_overflow);
+        full.def = ScopeDefId::new(def);
+        full.vis = vis;
+        *res = ScopeTypesItem::pack(full, &mut self.type_overflow);
     }
 
     pub(crate) fn update_def_values(&mut self, name: &Name, def: ModuleDefId, vis: Visibility) {
