@@ -36,6 +36,9 @@ debug = 2
 
 [patch.'crates-io']
 rowan = { git = "https://github.com/mjc/rowan", branch = "mjc/static-token-sharing" }
+salsa = { git = "https://github.com/mjc/salsa", rev = "881ba50356abc7753251e4d7d202395f24c63c0f" }
+salsa-macro-rules = { git = "https://github.com/mjc/salsa", rev = "881ba50356abc7753251e4d7d202395f24c63c0f" }
+salsa-macros = { git = "https://github.com/mjc/salsa", rev = "881ba50356abc7753251e4d7d202395f24c63c0f" }
 
 # line-index = { path = "lib/line-index" }
 # la-arena = { path = "lib/la-arena" }
