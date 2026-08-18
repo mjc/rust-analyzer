@@ -1332,15 +1332,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "intrusive-collections"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80e165935eba36cb526af8389effd2005a741adcbb6ed32106cc68e3f7b92960"
-dependencies = [
- "memoffset",
-]
-
-[[package]]
 name = "inventory"
 version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2579,7 +2570,7 @@ dependencies = [
 [[package]]
 name = "salsa"
 version = "0.28.2"
-source = "git+https://github.com/mjc/salsa?rev=881ba50356abc7753251e4d7d202395f24c63c0f#881ba50356abc7753251e4d7d202395f24c63c0f"
+source = "git+https://github.com/mjc/salsa?rev=7cc334f8869aa8285e3934c41a108cad47b4e360#7cc334f8869aa8285e3934c41a108cad47b4e360"
 dependencies = [
  "boxcar",
  "crossbeam-queue",
@@ -2587,7 +2578,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "hashlink",
  "indexmap",
- "intrusive-collections",
  "inventory",
  "parking_lot",
  "portable-atomic",
@@ -2605,12 +2595,12 @@ dependencies = [
 [[package]]
 name = "salsa-macro-rules"
 version = "0.28.2"
-source = "git+https://github.com/mjc/salsa?rev=881ba50356abc7753251e4d7d202395f24c63c0f#881ba50356abc7753251e4d7d202395f24c63c0f"
+source = "git+https://github.com/mjc/salsa?rev=7cc334f8869aa8285e3934c41a108cad47b4e360#7cc334f8869aa8285e3934c41a108cad47b4e360"
 
 [[package]]
 name = "salsa-macros"
 version = "0.28.2"
-source = "git+https://github.com/mjc/salsa?rev=881ba50356abc7753251e4d7d202395f24c63c0f#881ba50356abc7753251e4d7d202395f24c63c0f"
+source = "git+https://github.com/mjc/salsa?rev=7cc334f8869aa8285e3934c41a108cad47b4e360#7cc334f8869aa8285e3934c41a108cad47b4e360"
 dependencies = [
  "proc-macro2",
  "quote",
