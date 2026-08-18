@@ -6,7 +6,9 @@
 //! The *real* implementation is in the (language-agnostic) `rowan` crate, this
 //! module just wraps its API.
 
-use rowan::{GreenNodeBuilder, Language};
+use std::sync::OnceLock;
+
+use rowan::{GreenNodeBuilder, Language, SharedNodeCache};
 
 use crate::{Parse, SyntaxError, SyntaxKind, TextSize};
 
@@ -33,6 +35,8 @@ pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<RustLanguage>;
 pub type SyntaxElementChildren = rowan::SyntaxElementChildren<RustLanguage>;
 pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
+static SHARED_NODE_CACHE: OnceLock<SharedNodeCache> = OnceLock::new();
+
 #[derive(Default)]
 pub struct SyntaxTreeBuilder {
     errors: Vec<SyntaxError>,
@@ -40,6 +44,11 @@ pub struct SyntaxTreeBuilder {
 }
 
 impl SyntaxTreeBuilder {
+    pub(crate) fn with_shared_cache() -> Self {
+        let cache = SHARED_NODE_CACHE.get_or_init(SharedNodeCache::default);
+        Self { errors: Vec::new(), inner: GreenNodeBuilder::with_shared_cache(cache) }
+    }
+
     pub(crate) fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
         let green = self.inner.finish();
         (green, self.errors)

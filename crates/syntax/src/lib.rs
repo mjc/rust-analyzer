@@ -244,8 +244,21 @@ pub use crate::ast::SourceFile;
 
 impl SourceFile {
     pub fn parse(text: &str, edition: Edition) -> Parse<SourceFile> {
+        Self::parse_impl(text, edition, false)
+    }
+
+    #[doc(hidden)]
+    pub fn parse_with_shared_cache(text: &str, edition: Edition) -> Parse<SourceFile> {
+        Self::parse_impl(text, edition, true)
+    }
+
+    fn parse_impl(text: &str, edition: Edition, shared_cache: bool) -> Parse<SourceFile> {
         let _p = tracing::info_span!("SourceFile::parse").entered();
-        let (green, errors) = parsing::parse_text(text, edition);
+        let (green, errors) = if shared_cache {
+            parsing::parse_text_with_shared_cache(text, edition)
+        } else {
+            parsing::parse_text(text, edition)
+        };
         let root = SyntaxNode::new_root(green.clone());
 
         assert_eq!(root.kind(), SyntaxKind::SOURCE_FILE);
