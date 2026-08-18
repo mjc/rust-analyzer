@@ -24,7 +24,7 @@ impl EditionedFileId {
         let _p = tracing::info_span!("parse", ?self).entered();
         let (file_id, edition) = self.unpack(db);
         let text = db.file_text(file_id).text(db);
-        ast::SourceFile::parse(text, edition)
+        ast::SourceFile::parse_with_shared_cache(text, edition)
     }
 
     // firewall query
