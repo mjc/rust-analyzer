@@ -46,7 +46,6 @@ pub mod utils;
 
 use std::{marker::PhantomData, ops::Range};
 
-use rowan::SyntaxTreeId;
 use stdx::format_to;
 use triomphe::Arc;
 
@@ -72,30 +71,16 @@ pub use smol_str::{SmolStr, SmolStrBuilder, ToSmolStr, format_smolstr};
 ///
 /// Note that we always produce a syntax tree, even for completely invalid
 /// files.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Parse<T> {
     green: Option<GreenNode>,
     errors: Option<Arc<[SyntaxError]>>,
-    tree_id: SyntaxTreeId,
     _ty: PhantomData<fn() -> T>,
 }
 
-impl<T> PartialEq for Parse<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.green == other.green && self.errors == other.errors
-    }
-}
-
-impl<T> Eq for Parse<T> {}
-
 impl<T> Clone for Parse<T> {
     fn clone(&self) -> Parse<T> {
-        Parse {
-            green: self.green.clone(),
-            errors: self.errors.clone(),
-            tree_id: self.tree_id,
-            _ty: PhantomData,
-        }
+        Parse { green: self.green.clone(), errors: self.errors.clone(), _ty: PhantomData }
     }
 }
 
@@ -104,13 +89,12 @@ impl<T> Parse<T> {
         Parse {
             green: Some(green),
             errors: if errors.is_empty() { None } else { Some(errors.into()) },
-            tree_id: SyntaxTreeId::default(),
             _ty: PhantomData,
         }
     }
 
     pub fn syntax_node(&self) -> SyntaxNode {
-        SyntaxNode::new_root_with_id(self.green.as_ref().unwrap().clone(), self.tree_id)
+        SyntaxNode::new_root(self.green.as_ref().unwrap().clone())
     }
 
     pub fn errors(&self) -> Vec<SyntaxError> {
@@ -125,7 +109,7 @@ impl<T: AstNode> Parse<T> {
     pub fn to_syntax(mut self) -> Parse<SyntaxNode> {
         let green = self.green.take();
         let errors = self.errors.take();
-        Parse { green, errors, tree_id: self.tree_id, _ty: PhantomData }
+        Parse { green, errors, _ty: PhantomData }
     }
 
     /// Gets the parsed syntax tree as a typed ast node.
@@ -150,12 +134,7 @@ impl<T: AstNode> Parse<T> {
 impl Parse<SyntaxNode> {
     pub fn cast<N: AstNode>(mut self) -> Option<Parse<N>> {
         if N::cast(self.syntax_node()).is_some() {
-            Some(Parse {
-                green: self.green.take(),
-                errors: self.errors.take(),
-                tree_id: self.tree_id,
-                _ty: PhantomData,
-            })
+            Some(Parse { green: self.green.take(), errors: self.errors.take(), _ty: PhantomData })
         } else {
             None
         }
@@ -193,7 +172,6 @@ impl Parse<SourceFile> {
         .map(|(green_node, errors, _reparsed_range)| Parse {
             green: Some(green_node),
             errors: if errors.is_empty() { None } else { Some(errors.into()) },
-            tree_id: SyntaxTreeId::default(),
             _ty: PhantomData,
         })
     }
