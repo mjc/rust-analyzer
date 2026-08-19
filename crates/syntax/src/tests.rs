@@ -31,9 +31,16 @@ fn shared_parse_reuses_green_nodes() {
     let second = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT);
 
     assert!(std::ptr::eq::<rowan::GreenTokenData>(
-        &*first.syntax_node().first_token().unwrap().green(),
-        &*second.syntax_node().first_token().unwrap().green(),
+        first.syntax_node().first_token().unwrap().green(),
+        second.syntax_node().first_token().unwrap().green(),
     ));
+}
+
+#[test]
+fn parse_reuses_syntax_tree_identity() {
+    let parse = SourceFile::parse("fn same() {}", Edition::CURRENT);
+
+    assert_eq!(parse.syntax_node(), parse.syntax_node());
 }
 
 #[test]
