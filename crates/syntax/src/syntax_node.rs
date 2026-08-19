@@ -6,7 +6,9 @@
 //! The *real* implementation is in the (language-agnostic) `rowan` crate, this
 //! module just wraps its API.
 
-use rowan::{GreenNodeBuilder, Language};
+use std::sync::OnceLock;
+
+use rowan::{GreenNodeBuilder, Language, SharedGreenNodeBuilder, SharedNodeCache};
 
 use crate::{Parse, SyntaxError, SyntaxKind, TextSize};
 
@@ -33,13 +35,36 @@ pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<RustLanguage>;
 pub type SyntaxElementChildren = rowan::SyntaxElementChildren<RustLanguage>;
 pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
-#[derive(Default)]
+static SHARED_NODE_CACHE: OnceLock<SharedNodeCache> = OnceLock::new();
+
+#[derive(Debug, Default)]
 pub struct SyntaxTreeBuilder {
     errors: Vec<SyntaxError>,
     inner: GreenNodeBuilder<'static>,
 }
 
+pub(crate) struct SharedSyntaxTreeBuilder {
+    errors: Vec<SyntaxError>,
+    inner: SharedGreenNodeBuilder<'static>,
+}
+
+pub(crate) trait SyntaxTreeSink: Sized {
+    fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>);
+    fn token(&mut self, kind: SyntaxKind, text: &str);
+    fn start_node(&mut self, kind: SyntaxKind);
+    fn finish_node(&mut self);
+    fn error(&mut self, error: String, text_pos: TextSize);
+}
+
 impl SyntaxTreeBuilder {
+    pub(crate) fn with_shared_cache() -> SharedSyntaxTreeBuilder {
+        let cache = SHARED_NODE_CACHE.get_or_init(SharedNodeCache::default);
+        SharedSyntaxTreeBuilder {
+            errors: Vec::new(),
+            inner: GreenNodeBuilder::with_shared_cache(cache),
+        }
+    }
+
     pub(crate) fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
         let green = self.inner.finish();
         (green, self.errors)
@@ -71,6 +96,50 @@ impl SyntaxTreeBuilder {
     }
 
     pub fn error(&mut self, error: String, text_pos: TextSize) {
+        self.errors.push(SyntaxError::new_at_offset(error, text_pos));
+    }
+}
+
+impl SyntaxTreeSink for SyntaxTreeBuilder {
+    fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
+        SyntaxTreeBuilder::finish_raw(self)
+    }
+
+    fn token(&mut self, kind: SyntaxKind, text: &str) {
+        SyntaxTreeBuilder::token(self, kind, text);
+    }
+
+    fn start_node(&mut self, kind: SyntaxKind) {
+        SyntaxTreeBuilder::start_node(self, kind);
+    }
+
+    fn finish_node(&mut self) {
+        SyntaxTreeBuilder::finish_node(self);
+    }
+
+    fn error(&mut self, error: String, text_pos: TextSize) {
+        SyntaxTreeBuilder::error(self, error, text_pos);
+    }
+}
+
+impl SyntaxTreeSink for SharedSyntaxTreeBuilder {
+    fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
+        (self.inner.finish(), self.errors)
+    }
+
+    fn token(&mut self, kind: SyntaxKind, text: &str) {
+        self.inner.token(RustLanguage::kind_to_raw(kind), text);
+    }
+
+    fn start_node(&mut self, kind: SyntaxKind) {
+        self.inner.start_node(RustLanguage::kind_to_raw(kind));
+    }
+
+    fn finish_node(&mut self) {
+        self.inner.finish_node();
+    }
+
+    fn error(&mut self, error: String, text_pos: TextSize) {
         self.errors.push(SyntaxError::new_at_offset(error, text_pos));
     }
 }

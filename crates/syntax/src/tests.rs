@@ -26,6 +26,24 @@ fn main() {
 }
 
 #[test]
+fn shared_parse_reuses_green_nodes() {
+    let first = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT);
+    let second = SourceFile::parse_with_shared_cache("fn same() {}", Edition::CURRENT);
+
+    assert!(std::ptr::eq::<rowan::GreenTokenData>(
+        first.syntax_node().first_token().unwrap().green(),
+        second.syntax_node().first_token().unwrap().green(),
+    ));
+}
+
+#[test]
+fn parse_reuses_syntax_tree_identity() {
+    let parse = SourceFile::parse("fn same() {}", Edition::CURRENT);
+
+    assert_eq!(parse.syntax_node(), parse.syntax_node());
+}
+
+#[test]
 fn benchmark_parser() {
     if std::env::var("RUN_SLOW_BENCHES").is_err() {
         return;
