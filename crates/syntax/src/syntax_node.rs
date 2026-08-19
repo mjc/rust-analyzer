@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use rowan::{GreenNodeBuilder, Language, SharedGreenNodeBuilder, SharedNodeCache};
+use rowan::{GreenNodeBuilder, Language, SharedNodeCache};
 
 use crate::{Parse, SyntaxError, SyntaxKind, TextSize};
 
@@ -37,35 +37,20 @@ pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 
 static SHARED_NODE_CACHE: OnceLock<SharedNodeCache> = OnceLock::new();
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SyntaxTreeBuilder {
     errors: Vec<SyntaxError>,
-    inner: GreenBuilder,
-}
-
-#[derive(Debug)]
-enum GreenBuilder {
-    Local(GreenNodeBuilder<'static>),
-    Shared(SharedGreenNodeBuilder<'static>),
-}
-
-impl Default for SyntaxTreeBuilder {
-    fn default() -> Self {
-        Self { errors: Vec::new(), inner: GreenBuilder::Local(GreenNodeBuilder::new()) }
-    }
+    inner: GreenNodeBuilder<'static>,
 }
 
 impl SyntaxTreeBuilder {
     pub(crate) fn with_shared_cache() -> Self {
         let cache = SHARED_NODE_CACHE.get_or_init(SharedNodeCache::default);
-        Self { errors: Vec::new(), inner: GreenBuilder::Shared(SharedGreenNodeBuilder::new(cache)) }
+        Self { errors: Vec::new(), inner: GreenNodeBuilder::with_shared_cache(cache) }
     }
 
     pub(crate) fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
-        let green = match self.inner {
-            GreenBuilder::Local(builder) => builder.finish(),
-            GreenBuilder::Shared(builder) => builder.finish(),
-        };
+        let green = self.inner.finish();
         (green, self.errors)
     }
 
@@ -82,25 +67,16 @@ impl SyntaxTreeBuilder {
 
     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
         let kind = RustLanguage::kind_to_raw(kind);
-        match &mut self.inner {
-            GreenBuilder::Local(builder) => builder.token(kind, text),
-            GreenBuilder::Shared(builder) => builder.token(kind, text),
-        }
+        self.inner.token(kind, text);
     }
 
     pub fn start_node(&mut self, kind: SyntaxKind) {
         let kind = RustLanguage::kind_to_raw(kind);
-        match &mut self.inner {
-            GreenBuilder::Local(builder) => builder.start_node(kind),
-            GreenBuilder::Shared(builder) => builder.start_node(kind),
-        }
+        self.inner.start_node(kind);
     }
 
     pub fn finish_node(&mut self) {
-        match &mut self.inner {
-            GreenBuilder::Local(builder) => builder.finish_node(),
-            GreenBuilder::Shared(builder) => builder.finish_node(),
-        }
+        self.inner.finish_node();
     }
 
     pub fn error(&mut self, error: String, text_pos: TextSize) {
