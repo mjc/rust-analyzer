@@ -5,7 +5,10 @@ mod reparsing;
 
 use rowan::TextRange;
 
-use crate::{SyntaxError, SyntaxTreeBuilder, syntax_node::GreenNode};
+use crate::{
+    SyntaxError, SyntaxTreeBuilder,
+    syntax_node::{GreenNode, SyntaxTreeSink},
+};
 
 pub(crate) use crate::parsing::reparsing::incremental_reparse;
 
@@ -20,10 +23,10 @@ pub(crate) fn parse_text_with_shared_cache(
     parse_text_with_builder(text, edition, SyntaxTreeBuilder::with_shared_cache())
 }
 
-fn parse_text_with_builder(
+fn parse_text_with_builder<B: SyntaxTreeSink>(
     text: &str,
     edition: parser::Edition,
-    builder: SyntaxTreeBuilder,
+    builder: B,
 ) -> (GreenNode, Vec<SyntaxError>) {
     let _p = tracing::info_span!("parse_text").entered();
     let lexed = parser::LexedStr::new(edition, text);
@@ -54,10 +57,10 @@ pub(crate) fn build_tree(
     build_tree_with_builder(lexed, parser_output, SyntaxTreeBuilder::default())
 }
 
-fn build_tree_with_builder(
+fn build_tree_with_builder<B: SyntaxTreeSink>(
     lexed: parser::LexedStr<'_>,
     parser_output: parser::Output,
-    mut builder: SyntaxTreeBuilder,
+    mut builder: B,
 ) -> (GreenNode, Vec<SyntaxError>, bool) {
     let _p = tracing::info_span!("build_tree").entered();
 

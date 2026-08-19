@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use rowan::{GreenNodeBuilder, Language, SharedNodeCache};
+use rowan::{GreenNodeBuilder, Language, SharedGreenNodeBuilder, SharedNodeCache};
 
 use crate::{Parse, SyntaxError, SyntaxKind, TextSize};
 
@@ -43,10 +43,26 @@ pub struct SyntaxTreeBuilder {
     inner: GreenNodeBuilder<'static>,
 }
 
+pub(crate) struct SharedSyntaxTreeBuilder {
+    errors: Vec<SyntaxError>,
+    inner: SharedGreenNodeBuilder<'static>,
+}
+
+pub(crate) trait SyntaxTreeSink: Sized {
+    fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>);
+    fn token(&mut self, kind: SyntaxKind, text: &str);
+    fn start_node(&mut self, kind: SyntaxKind);
+    fn finish_node(&mut self);
+    fn error(&mut self, error: String, text_pos: TextSize);
+}
+
 impl SyntaxTreeBuilder {
-    pub(crate) fn with_shared_cache() -> Self {
+    pub(crate) fn with_shared_cache() -> SharedSyntaxTreeBuilder {
         let cache = SHARED_NODE_CACHE.get_or_init(SharedNodeCache::default);
-        Self { errors: Vec::new(), inner: GreenNodeBuilder::with_shared_cache(cache) }
+        SharedSyntaxTreeBuilder {
+            errors: Vec::new(),
+            inner: GreenNodeBuilder::with_shared_cache(cache),
+        }
     }
 
     pub(crate) fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
@@ -80,6 +96,50 @@ impl SyntaxTreeBuilder {
     }
 
     pub fn error(&mut self, error: String, text_pos: TextSize) {
+        self.errors.push(SyntaxError::new_at_offset(error, text_pos));
+    }
+}
+
+impl SyntaxTreeSink for SyntaxTreeBuilder {
+    fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
+        SyntaxTreeBuilder::finish_raw(self)
+    }
+
+    fn token(&mut self, kind: SyntaxKind, text: &str) {
+        SyntaxTreeBuilder::token(self, kind, text);
+    }
+
+    fn start_node(&mut self, kind: SyntaxKind) {
+        SyntaxTreeBuilder::start_node(self, kind);
+    }
+
+    fn finish_node(&mut self) {
+        SyntaxTreeBuilder::finish_node(self);
+    }
+
+    fn error(&mut self, error: String, text_pos: TextSize) {
+        SyntaxTreeBuilder::error(self, error, text_pos);
+    }
+}
+
+impl SyntaxTreeSink for SharedSyntaxTreeBuilder {
+    fn finish_raw(self) -> (GreenNode, Vec<SyntaxError>) {
+        (self.inner.finish(), self.errors)
+    }
+
+    fn token(&mut self, kind: SyntaxKind, text: &str) {
+        self.inner.token(RustLanguage::kind_to_raw(kind), text);
+    }
+
+    fn start_node(&mut self, kind: SyntaxKind) {
+        self.inner.start_node(RustLanguage::kind_to_raw(kind));
+    }
+
+    fn finish_node(&mut self) {
+        self.inner.finish_node();
+    }
+
+    fn error(&mut self, error: String, text_pos: TextSize) {
         self.errors.push(SyntaxError::new_at_offset(error, text_pos));
     }
 }
