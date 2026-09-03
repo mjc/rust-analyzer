@@ -35,7 +35,7 @@ inherits = "release"
 debug = 2
 
 [patch.'crates-io']
-rowan = { git = "https://github.com/mjc/rowan", branch = "mjc/static-token-sharing" }
+rowan = { git = "https://github.com/mjc/rowan", rev = "7584cbf09eceaa2b6eb25d194872a3efe9da418c" }
 salsa = { git = "https://github.com/mjc/salsa", rev = "7cc334f8869aa8285e3934c41a108cad47b4e360" }
 salsa-macro-rules = { git = "https://github.com/mjc/salsa", rev = "7cc334f8869aa8285e3934c41a108cad47b4e360" }
 salsa-macros = { git = "https://github.com/mjc/salsa", rev = "7cc334f8869aa8285e3934c41a108cad47b4e360" }
@@ -127,7 +127,7 @@ process-wrap = { version = "9.1.0", features = ["std"] }
 pulldown-cmark-to-cmark = "10.0.4"
 pulldown-cmark = { version = "0.9.6", default-features = false }
 rayon = "1.10.0"
-rowan = "0.17.0"
+rowan = { version = "0.17.0", default-features = false }
 # Ideally we'd not enable the macros feature but unfortunately the `tracked` attribute does not work
 # on impls without it
 salsa = { version = "0.28.2", default-features = false, features = [
